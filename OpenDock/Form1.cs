@@ -3,10 +3,20 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.Drawing;
 using System.Runtime.InteropServices;
+using System.Text.Json;
 using System.Windows.Forms;
+using Microsoft.Win32;
 
 namespace OpenDock
 {
+    internal sealed class OpenDockSettings
+    {
+        public int DockColorArgb { get; set; } = Color.FromArgb(175, 24, 24, 24).ToArgb();
+        public int MenuColorArgb { get; set; } = Color.FromArgb(175, 24, 24, 24).ToArgb();
+        public int SearchColorArgb { get; set; } = Color.FromArgb(45, 45, 45).ToArgb();
+        public string MenuLogoPath { get; set; } = "";
+    }
+
     public partial class Form1 : Form
     {
         [DllImport("gdi32.dll", EntryPoint = "CreateRoundRectRgn")]
@@ -156,6 +166,26 @@ namespace OpenDock
                     }
                 }
             }
+
+            string fallbackPath = GetFallbackExecutablePath(procName);
+            return System.IO.File.Exists(fallbackPath) ? fallbackPath : "";
+        }
+
+        private static string GetFallbackExecutablePath(string processName)
+        {
+            string windowsPath = Environment.GetFolderPath(Environment.SpecialFolder.Windows);
+
+            if (processName.Equals("notepad", StringComparison.OrdinalIgnoreCase))
+            {
+                return System.IO.Path.Combine(windowsPath, "System32", "notepad.exe");
+            }
+
+            if (processName.Equals("notepad++", StringComparison.OrdinalIgnoreCase))
+            {
+                string programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+                return System.IO.Path.Combine(programFiles, "Notepad++", "notepad++.exe");
+            }
+
             return "";
         }
 
@@ -174,11 +204,18 @@ namespace OpenDock
             if (hWnd == IntPtr.Zero || hWnd == GetShellWindow()) return false;
             if (!IsWindowVisible(hWnd)) return false;
 
-            IntPtr owner = GetWindow(hWnd, GW_OWNER);
-            if (owner != IntPtr.Zero) return false;
-
             long exStyle = GetWindowLong(hWnd, GWL_EXSTYLE).ToInt64();
+
+            // WS_EX_TOOLWINDOW without WS_EX_APPWINDOW = hidden utility/helper window
             if ((exStyle & WS_EX_TOOLWINDOW) != 0 && (exStyle & WS_EX_APPWINDOW) == 0)
+            {
+                return false;
+            }
+
+            // Owned windows are usually child dialogs — skip them,
+            // UNLESS they explicitly have WS_EX_APPWINDOW (some apps like Notepad++ do this)
+            IntPtr owner = GetWindow(hWnd, GW_OWNER);
+            if (owner != IntPtr.Zero && (exStyle & WS_EX_APPWINDOW) == 0)
             {
                 return false;
             }
@@ -352,6 +389,14 @@ namespace OpenDock
             }
 
             private readonly int _canvasSize;
+            private bool _showIndicator = false;
+
+            [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+            public bool ShowIndicator
+            {
+                get => _showIndicator;
+                set { _showIndicator = value; }
+            }
 
             public IconWindow(int canvasSize)
             {
@@ -367,8 +412,9 @@ namespace OpenDock
             {
                 if (_originalBitmap == null || size <= 0) return;
 
+                int indicatorSpace = _showIndicator ? 7 : 0; // Extra height for the dot below the icon
                 int windowWidth = size;
-                int windowHeight = size;
+                int windowHeight = size + indicatorSpace;
                 int drawX = 0;
                 int drawY = 0;
                 int windowX = x;
@@ -379,28 +425,40 @@ namespace OpenDock
                 if (showText)
                 {
                     windowWidth = 150;
-                    windowHeight = size + 20; // 48 + 20 = 68
-                    drawX = (windowWidth - size) / 2; // Center icon horizontally
-                    drawY = 20; // Push icon down to leave space for text
+                    windowHeight = size + 20 + indicatorSpace;
+                    drawX = (windowWidth - size) / 2;
+                    drawY = 20;
                     windowX = x - (windowWidth - size) / 2;
                     windowY = y - 20;
                 }
                 else
                 {
-                    _scrollOffset = 0f; // Reset scroll when not hovered or sizing up
+                    _scrollOffset = 0f;
                 }
 
                 var scaled = new Bitmap(windowWidth, windowHeight, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
                 using (var g = Graphics.FromImage(scaled))
                 {
-                    // Draw a nearly invisible background to capture clicks over the entire bounds (fixes small click target bug)!
                     g.Clear(Color.FromArgb(1, 0, 0, 0));
-
                     g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                     g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
                     // Draw the icon
                     g.DrawImage(_originalBitmap, drawX, drawY, size, size);
+
+                    // Draw indicator line below icon for open applications
+                    if (_showIndicator)
+                    {
+                        float dotWidth = Math.Max(8f, size * 0.35f);
+                        float dotHeight = 3f;
+                        float dotX = drawX + (size - dotWidth) / 2f;
+                        float dotY = drawY + size + 2f;
+                        using (var dotBrush = new SolidBrush(Color.FromArgb(230, 255, 255, 255)))
+                        {
+                            g.FillEllipse(dotBrush, dotX, dotY, dotWidth, dotHeight);
+                        }
+                    }
 
                     // Draw the application name above the icon
                     if (showText)
@@ -630,6 +688,11 @@ namespace OpenDock
             public IntPtr WindowHandle { get; set; }
             public Point OriginalLocation { get; set; } // Ekran koordinat�
             public Size OriginalSize { get; set; }
+            public string AppKey { get; set; } = "";
+            public string DisplayName { get; set; } = "";
+            public string ExePath { get; set; } = "";
+            public bool IsPinned { get; set; }
+            public bool IsOpen { get; set; }
 
             public double CurrentProgress { get; set; } = 0; // 0.0 (en k���k) ile 1.0 (en b�y�k) aras�
             public bool IsHovered { get; set; } = false;
@@ -637,14 +700,37 @@ namespace OpenDock
             public IconWindow Owner { get; set; } = null!;
         }
 
+        private class PinnedDockApp
+        {
+            public string DisplayName { get; set; } = "";
+            public string ExePath { get; set; } = "";
+        }
+
+        private class DockEntryInfo
+        {
+            public string AppKey { get; set; } = "";
+            public string DisplayName { get; set; } = "";
+            public string ExePath { get; set; } = "";
+            public IntPtr WindowHandle { get; set; } = IntPtr.Zero;
+            public bool IsPinned { get; set; }
+            public bool IsOpen => WindowHandle != IntPtr.Zero;
+        }
+
         private readonly List<DockItemData> _dockItems = new();
         private const int MaxIconSize = 48; // pencerelerin SABİT, hiç değişmeyen tuval boyutu
         private System.Windows.Forms.Timer _hoverCheckTimer = null!;
         private System.Windows.Forms.Timer _autoRefreshTimer = null!;
         private NotifyIcon? _trayIcon;
+        private ToolStripMenuItem? _startupMenuItem;
+        private bool _isUpdatingStartupMenuState;
         private int _separatorX = -1;
         private static readonly string OrderFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dock_order.txt");
+        private static readonly string PinnedAppsFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dock_pins.json");
+        private static readonly string SettingsFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "opendock_settings.json");
+        internal static OpenDockSettings CurrentSettings { get; private set; } = new();
+        private const int DockCornerRadius = 10;
         private List<string> _savedOrder = new();
+        private List<PinnedDockApp> _pinnedApps = new();
 
         // Fareyi her ikonun SABT orijinal (bymeden nceki) alanna gre kontrol eder.
         // Bylece byyen/kayan pencere snrlar hover durumunu etkilemez, titreme biter.
@@ -689,11 +775,29 @@ namespace OpenDock
             int x = (workspace.Width - this.Width) / 2;
             int y = workspace.Height - this.Height - 10;
             this.Location = new Point(x, y);
+            ApplyDockRegion();
+        }
+
+        protected override void OnSizeChanged(EventArgs e)
+        {
+            base.OnSizeChanged(e);
+            ApplyDockRegion();
+        }
+
+        private void ApplyDockRegion()
+        {
+            if (Width <= 0 || Height <= 0)
+                return;
+
+            Region?.Dispose();
+            Region = new Region(RoundedRect(new Rectangle(0, 0, Width - 1, Height - 1), DockCornerRadius));
         }
 
         private void Form1_Load(object sender, EventArgs e)
         {
             this.SuspendLayout();
+            LoadSettings();
+            LoadPinnedApps();
             LoadDockOrder();
             RefreshDockIcons();
             EnableBlur();
@@ -708,6 +812,7 @@ namespace OpenDock
             this.Activated += (s, e) => EnableBlur();
             this.Deactivate += (s, e) => EnableBlur();
             InitializeTrayIcon();
+            StartMenuForm.WarmInstalledAppsCacheAsync();
             this.ResumeLayout();
         }
 
@@ -810,6 +915,9 @@ namespace OpenDock
                 SaveDockOrder();
             }
 
+            var dockEntries = new List<DockEntryInfo>();
+            var entryMap = new Dictionary<string, DockEntryInfo>(StringComparer.OrdinalIgnoreCase);
+
             // Sort discovered windows according to their index in the saved order list
             tempWindows.Sort((x, y) =>
             {
@@ -818,8 +926,6 @@ namespace OpenDock
                 return idxX.CompareTo(idxY);
             });
 
-            // Create dock items in the sorted order
-            int startX = 25;
             foreach (var winItem in tempWindows)
             {
                 IntPtr hwnd = winItem.hwnd;
@@ -829,14 +935,13 @@ namespace OpenDock
                 try
                 {
                     string path = GetProcessFilePath(proc);
-                    if (string.IsNullOrEmpty(path)) continue;
+                    if (string.IsNullOrWhiteSpace(path))
+                        continue;
 
-                    Icon? icon = GetHighQualityIcon(path);
-                    if (icon == null) continue;
+                    string appKey = NormalizeAppKey(path);
+                    if (string.IsNullOrWhiteSpace(appKey))
+                        continue;
 
-                    Point screenLocation = new Point(this.Left + startX, this.Top + defaultY);
-                    var iconWindow = new IconWindow(MaxIconSize);
-                    
                     string displayName = "";
                     try
                     {
@@ -868,27 +973,31 @@ namespace OpenDock
                         displayName = displayName.Substring(10);
                     }
 
-                    iconWindow.SetIconImage(icon.ToBitmap(), baseSize, displayName);
-                    icon.Dispose(); // ToBitmap kopyaladıktan sonra artık lazım değil
-
-                    var animData = new DockItemData
+                    if (!entryMap.TryGetValue(appKey, out var entry))
                     {
-                        WindowHandle = hwnd,
-                        OriginalLocation = screenLocation,
-                        OriginalSize = new Size(baseSize, baseSize),
-                        Owner = iconWindow,
-                        AnimTimer = new System.Windows.Forms.Timer { Interval = 15 }
-                    };
+                        entry = new DockEntryInfo
+                        {
+                            AppKey = appKey,
+                            DisplayName = displayName,
+                            ExePath = path,
+                            WindowHandle = hwnd,
+                            IsPinned = IsPinnedApp(path)
+                        };
+                        entryMap[appKey] = entry;
+                        dockEntries.Add(entry);
+                    }
+                    else if (entry.WindowHandle == IntPtr.Zero)
+                    {
+                        entry.WindowHandle = hwnd;
+                        if (!string.IsNullOrWhiteSpace(displayName))
+                            entry.DisplayName = displayName;
+                        entry.ExePath = path;
+                    }
 
-                    animData.AnimTimer.Tick += (s, e) => UpdateAnimation(animData);
-
-                    iconWindow.Cursor = Cursors.Hand;
-                    iconWindow.Click += (s, e) => FocusWindow(animData.WindowHandle);
-
-                    iconWindow.Show(this); // this = sahibi (owner), her zaman dock'un üzerinde durur
-                    iconWindow.UpdateBounds(screenLocation.X, screenLocation.Y, baseSize); // handle artık var - ilk çizimi garanti altına al
-                    _dockItems.Add(animData);
-                    startX += baseSize + 15;
+                    if (!entry.IsPinned && IsPinnedApp(path))
+                    {
+                        entry.IsPinned = true;
+                    }
                 }
                 catch
                 {
@@ -900,6 +1009,107 @@ namespace OpenDock
                 }
             }
 
+            foreach (var pinnedApp in _pinnedApps)
+            {
+                string path = pinnedApp.ExePath.Trim();
+                string appKey = NormalizeAppKey(path);
+                if (string.IsNullOrWhiteSpace(appKey))
+                    continue;
+
+                if (entryMap.ContainsKey(appKey))
+                {
+                    entryMap[appKey].IsPinned = true;
+                    if (string.IsNullOrWhiteSpace(entryMap[appKey].DisplayName))
+                    {
+                        entryMap[appKey].DisplayName = string.IsNullOrWhiteSpace(pinnedApp.DisplayName)
+                            ? GetDisplayNameFromPath(path)
+                            : pinnedApp.DisplayName;
+                    }
+                    continue;
+                }
+
+                var pinnedEntry = new DockEntryInfo
+                {
+                    AppKey = appKey,
+                    DisplayName = string.IsNullOrWhiteSpace(pinnedApp.DisplayName)
+                        ? GetDisplayNameFromPath(path)
+                        : pinnedApp.DisplayName,
+                    ExePath = path,
+                    WindowHandle = IntPtr.Zero,
+                    IsPinned = true
+                };
+                entryMap[appKey] = pinnedEntry;
+                dockEntries.Add(pinnedEntry);
+            }
+
+            // Create dock items in the sorted order
+            int startX = 25;
+            foreach (var entry in dockEntries)
+            {
+                try
+                {
+                    Icon? icon = GetHighQualityIcon(entry.ExePath);
+                    if (icon == null)
+                        icon = SystemIcons.Application;
+
+                    Point screenLocation = new Point(this.Left + startX, this.Top + defaultY);
+                    var iconWindow = new IconWindow(MaxIconSize);
+                    iconWindow.SetIconImage(icon.ToBitmap(), baseSize, entry.DisplayName);
+                    icon.Dispose(); // ToBitmap kopyaladıktan sonra artık lazım değil
+
+                    var animData = new DockItemData
+                    {
+                        WindowHandle = entry.WindowHandle,
+                        OriginalLocation = screenLocation,
+                        OriginalSize = new Size(baseSize, baseSize),
+                        AppKey = entry.AppKey,
+                        DisplayName = entry.DisplayName,
+                        ExePath = entry.ExePath,
+                        IsPinned = entry.IsPinned,
+                        IsOpen = entry.IsOpen,
+                        Owner = iconWindow,
+                        AnimTimer = new System.Windows.Forms.Timer { Interval = 15 }
+                    };
+
+                    animData.AnimTimer.Tick += (s, e) => UpdateAnimation(animData);
+
+                    iconWindow.Cursor = Cursors.Hand;
+                    iconWindow.ShowIndicator = animData.IsOpen;
+                    iconWindow.MouseUp += (s, e) =>
+                    {
+                        if (e.Button == MouseButtons.Right)
+                        {
+                            BuildDockItemContextMenu(animData).Show(iconWindow, e.Location);
+                            return;
+                        }
+
+                        if (e.Button != MouseButtons.Left)
+                            return;
+
+                        if (animData.IsOpen && animData.WindowHandle != IntPtr.Zero)
+                        {
+                            FocusWindow(animData.WindowHandle);
+                            return;
+                        }
+
+                        try
+                        {
+                            Process.Start(new ProcessStartInfo(animData.ExePath) { UseShellExecute = true });
+                        }
+                        catch { }
+                    };
+
+                    iconWindow.Show(this); // this = sahibi (owner), her zaman dock'un üzerinde durur
+                    iconWindow.UpdateBounds(screenLocation.X, screenLocation.Y, baseSize); // handle artık var - ilk çizimi garanti altına al
+                    _dockItems.Add(animData);
+                    startX += baseSize + 15;
+                }
+                catch
+                {
+                    continue;
+                }
+            }
+
             // Draw a separator line and place the Windows button at the very right of the dock
             int winButtonX = this.Width - baseSize - 25;
             _separatorX = winButtonX - 15;
@@ -908,7 +1118,7 @@ namespace OpenDock
             {
                 Point screenLocation = new Point(this.Left + winButtonX, this.Top + defaultY);
                 var winIconWindow = new IconWindow(MaxIconSize);
-                winIconWindow.SetIconImage(GetWindowsLogoBitmap(baseSize), baseSize, "Menü");
+                winIconWindow.SetIconImage(GetMenuLogoBitmap(baseSize), baseSize, "Menü");
 
                 var winAnimData = new DockItemData
                 {
@@ -933,6 +1143,30 @@ namespace OpenDock
             catch { }
 
             this.Invalidate();
+        }
+
+        private Bitmap GetMenuLogoBitmap(int size)
+        {
+            string logoPath = CurrentSettings.MenuLogoPath;
+            if (!string.IsNullOrWhiteSpace(logoPath) && System.IO.File.Exists(logoPath))
+            {
+                try
+                {
+                    using var source = new Bitmap(logoPath);
+                    var customLogo = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+                    using (var g = Graphics.FromImage(customLogo))
+                    {
+                        g.Clear(Color.Transparent);
+                        g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                        g.DrawImage(source, new Rectangle(0, 0, size, size));
+                    }
+                    return customLogo;
+                }
+                catch { }
+            }
+
+            return GetWindowsLogoBitmap(size);
         }
 
         private Bitmap GetWindowsLogoBitmap(int size)
@@ -988,6 +1222,266 @@ namespace OpenDock
                 System.IO.File.WriteAllLines(OrderFilePath, _savedOrder);
             }
             catch { }
+        }
+
+        private static void LoadSettings()
+        {
+            try
+            {
+                if (!System.IO.File.Exists(SettingsFilePath))
+                {
+                    CurrentSettings = new OpenDockSettings();
+                    return;
+                }
+
+                string json = System.IO.File.ReadAllText(SettingsFilePath);
+                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                CurrentSettings = JsonSerializer.Deserialize<OpenDockSettings>(json, options) ?? new OpenDockSettings();
+                CurrentSettings.DockColorArgb = WithAlpha(CurrentSettings.DockColorArgb, 175);
+                CurrentSettings.MenuColorArgb = WithAlpha(CurrentSettings.MenuColorArgb, 175);
+                CurrentSettings.SearchColorArgb = WithAlpha(CurrentSettings.SearchColorArgb, 255);
+            }
+            catch
+            {
+                CurrentSettings = new OpenDockSettings();
+            }
+        }
+
+        private static int WithAlpha(int colorArgb, int alpha)
+        {
+            var color = Color.FromArgb(colorArgb);
+            return Color.FromArgb(alpha, color.R, color.G, color.B).ToArgb();
+        }
+
+        private static void SaveSettings()
+        {
+            try
+            {
+                var options = new JsonSerializerOptions { WriteIndented = true };
+                string json = JsonSerializer.Serialize(CurrentSettings, options);
+                System.IO.File.WriteAllText(SettingsFilePath, json);
+            }
+            catch { }
+        }
+
+        private void ApplyDockAppearance()
+        {
+            CurrentSettings.DockColorArgb = WithAlpha(CurrentSettings.DockColorArgb, 175);
+            ApplyDockRegion();
+            EnableBlur();
+            Invalidate(true);
+            Update();
+        }
+
+        private void SelectMenuLogo()
+        {
+            using var dialog = new OpenFileDialog
+            {
+                Title = "32x32 logo sec",
+                Filter = "Resim dosyalari|*.png;*.jpg;*.jpeg;*.bmp;*.ico|Tum dosyalar|*.*",
+                CheckFileExists = true,
+                Multiselect = false
+            };
+
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+                return;
+
+            CurrentSettings.MenuLogoPath = dialog.FileName;
+            SaveSettings();
+            RefreshDockIcons();
+        }
+
+        private void SelectColor(string title, Func<OpenDockSettings, int> getColor, Action<OpenDockSettings, int> setColor, Action afterApply, int? alphaOverride = null)
+        {
+            using var dialog = new ColorDialog
+            {
+                FullOpen = true,
+                Color = Color.FromArgb(getColor(CurrentSettings))
+            };
+
+            if (dialog.ShowDialog(this) != DialogResult.OK)
+                return;
+
+            var previousColor = Color.FromArgb(getColor(CurrentSettings));
+            int alpha = alphaOverride ?? previousColor.A;
+            var selectedColor = Color.FromArgb(alpha, dialog.Color.R, dialog.Color.G, dialog.Color.B);
+            setColor(CurrentSettings, selectedColor.ToArgb());
+            SaveSettings();
+            afterApply();
+        }
+
+        private static string NormalizeAppKey(string? appPath)
+        {
+            if (string.IsNullOrWhiteSpace(appPath))
+                return "";
+
+            string normalized = appPath.Trim().Trim('"');
+            if (System.IO.Path.IsPathRooted(normalized))
+            {
+                try
+                {
+                    normalized = System.IO.Path.GetFullPath(normalized);
+                }
+                catch
+                {
+                    // Keep the trimmed value if the path cannot be normalized.
+                }
+            }
+
+            return normalized.ToLowerInvariant();
+        }
+
+        private static string GetDisplayNameFromPath(string? exePath)
+        {
+            if (string.IsNullOrWhiteSpace(exePath))
+                return "Uygulama";
+
+            try
+            {
+                var fileName = System.IO.Path.GetFileNameWithoutExtension(exePath);
+                if (!string.IsNullOrWhiteSpace(fileName))
+                    return fileName;
+            }
+            catch { }
+
+            return "Uygulama";
+        }
+
+        private void LoadPinnedApps()
+        {
+            try
+            {
+                if (!System.IO.File.Exists(PinnedAppsFilePath))
+                {
+                    _pinnedApps = new List<PinnedDockApp>();
+                    return;
+                }
+
+                string json = System.IO.File.ReadAllText(PinnedAppsFilePath);
+                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
+                var fileData = JsonSerializer.Deserialize<PinnedDockConfig>(json, options);
+                _pinnedApps = fileData?.PinnedApps
+                    ?.Where(app => !string.IsNullOrWhiteSpace(app.ExePath))
+                    .Select(app => new PinnedDockApp
+                    {
+                        DisplayName = string.IsNullOrWhiteSpace(app.DisplayName) ? GetDisplayNameFromPath(app.ExePath) : app.DisplayName.Trim(),
+                        ExePath = app.ExePath.Trim()
+                    })
+                    .GroupBy(app => NormalizeAppKey(app.ExePath))
+                    .Select(group => group.First())
+                    .ToList() ?? new List<PinnedDockApp>();
+            }
+            catch
+            {
+                _pinnedApps = new List<PinnedDockApp>();
+            }
+        }
+
+        private void SavePinnedApps()
+        {
+            try
+            {
+                var config = new PinnedDockConfig
+                {
+                    PinnedApps = _pinnedApps
+                        .Where(app => !string.IsNullOrWhiteSpace(app.ExePath))
+                        .GroupBy(app => NormalizeAppKey(app.ExePath))
+                        .Select(group => group.First())
+                        .OrderBy(app => app.DisplayName, StringComparer.OrdinalIgnoreCase)
+                        .ToList()
+                };
+
+                var options = new JsonSerializerOptions
+                {
+                    WriteIndented = true
+                };
+
+                string json = JsonSerializer.Serialize(config, options);
+                System.IO.File.WriteAllText(PinnedAppsFilePath, json);
+            }
+            catch { }
+        }
+
+        private bool IsPinnedApp(string exePath)
+        {
+            string key = NormalizeAppKey(exePath);
+            return _pinnedApps.Any(app => NormalizeAppKey(app.ExePath) == key);
+        }
+
+        private void PinApp(string displayName, string exePath)
+        {
+            string key = NormalizeAppKey(exePath);
+            if (string.IsNullOrWhiteSpace(key))
+                return;
+
+            var existing = _pinnedApps.FirstOrDefault(app => NormalizeAppKey(app.ExePath) == key);
+            if (existing != null)
+            {
+                existing.DisplayName = displayName;
+                existing.ExePath = exePath;
+            }
+            else
+            {
+                _pinnedApps.Add(new PinnedDockApp
+                {
+                    DisplayName = displayName,
+                    ExePath = exePath
+                });
+            }
+
+            SavePinnedApps();
+        }
+
+        private void UnpinApp(string exePath)
+        {
+            string key = NormalizeAppKey(exePath);
+            if (string.IsNullOrWhiteSpace(key))
+                return;
+
+            _pinnedApps = _pinnedApps
+                .Where(app => NormalizeAppKey(app.ExePath) != key)
+                .ToList();
+            SavePinnedApps();
+        }
+
+        private sealed class PinnedDockConfig
+        {
+            public List<PinnedDockApp> PinnedApps { get; set; } = new();
+        }
+
+        private ContextMenuStrip BuildDockItemContextMenu(DockItemData data)
+        {
+            var menu = new ContextMenuStrip
+            {
+                ShowImageMargin = false
+            };
+
+            var pinToggleText = data.IsPinned ? "Dock'tan kaldır" : "Dock'a kilitle";
+            var pinToggleItem = new ToolStripMenuItem(pinToggleText);
+            pinToggleItem.Enabled = !string.IsNullOrWhiteSpace(data.ExePath);
+            pinToggleItem.Click += (s, e) =>
+            {
+                if (string.IsNullOrWhiteSpace(data.ExePath))
+                    return;
+
+                if (data.IsPinned)
+                {
+                    UnpinApp(data.ExePath);
+                }
+                else
+                {
+                    PinApp(string.IsNullOrWhiteSpace(data.DisplayName) ? GetDisplayNameFromPath(data.ExePath) : data.DisplayName, data.ExePath);
+                }
+
+                if (!IsDisposed && IsHandleCreated)
+                {
+                    BeginInvoke(new Action(RefreshDockIcons));
+                }
+            };
+
+            menu.Items.Add(pinToggleItem);
+
+            return menu;
         }
 
         private void CheckForWindowChanges()
@@ -1167,15 +1661,15 @@ namespace OpenDock
             IntPtr exStyle = GetWindowLongPtr(this.Handle, GWL_EXSTYLE);
             SetWindowLong(this.Handle, GWL_EXSTYLE, new IntPtr(exStyle.ToInt32() | WS_EX_NOACTIVATE));
 
-            // DWM corner rounding
-            int cornerPref = 2;
+            // Dock uses its own region mask; DWM rounding would add a second, mismatched corner shape.
+            int cornerPref = 1;
             DwmSetWindowAttribute(this.Handle, 33, ref cornerPref, sizeof(int));
 
             // Set Window Composition Accent Policy for Aero Blur (keeps blur active when deactivated)
             var accent = new AccentPolicy
             {
                 AccentState = AccentState.ACCENT_ENABLE_BLURBEHIND,
-                GradientColor = 0x35121212
+                GradientColor = 0x55181818
             };
             var accentStructSize = Marshal.SizeOf(accent);
             var accentPtr = Marshal.AllocHGlobal(accentStructSize);
@@ -1195,27 +1689,28 @@ namespace OpenDock
         protected override void OnPaint(PaintEventArgs e)
         {
             var g = e.Graphics;
-            g.Clear(Color.Transparent); // Clear canvas to prevent gradient accumulation (stops whiteness accumulation)
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
-            int softness = 8;
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            var dockColor = Color.FromArgb(CurrentSettings.DockColorArgb);
+            var glassColor = Color.FromArgb(74, dockColor.R, dockColor.G, dockColor.B);
 
-            using (var path = RoundedRect(rect, softness))
+            g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+            g.Clear(Color.Transparent);
+
+            using (var path = RoundedRect(rect, DockCornerRadius))
+            using (var fillBrush = new SolidBrush(glassColor))
+            using (var borderPen = new Pen(Color.FromArgb(82, 255, 255, 255), 1f))
+            using (var glossBrush = new System.Drawing.Drawing2D.LinearGradientBrush(
+                rect,
+                Color.FromArgb(26, 255, 255, 255),
+                Color.FromArgb(3, 255, 255, 255),
+                System.Drawing.Drawing2D.LinearGradientMode.Vertical))
             {
-                // Hafif stten-alta gradient  cam zerindeki k yansmas hissi
-                using (var gradient = new System.Drawing.Drawing2D.LinearGradientBrush(
-                    rect, Color.FromArgb(28, 255, 255, 255), Color.FromArgb(6, 255, 255, 255),
-                    System.Drawing.Drawing2D.LinearGradientMode.Vertical))
-                {
-                    g.FillPath(gradient, path);
-                }
-
-                // İnce, yarı saydam kenarlık - camın kenar çizgisi
-                using (var borderPen = new Pen(Color.FromArgb(40, 255, 255, 255), 1f))
-                {
-                    g.DrawPath(borderPen, path);
-                }
+                g.FillPath(fillBrush, path);
+                g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver;
+                g.FillPath(glossBrush, path);
+                g.DrawPath(borderPen, path);
             }
 
             // Draw vertical separator line for the Windows button
@@ -1234,8 +1729,67 @@ namespace OpenDock
             _trayIcon.Text = "OpenDock";
             _trayIcon.Icon = this.Icon ?? SystemIcons.Application;
 
-            var contextMenu = new ContextMenuStrip();
+            var contextMenu = new ContextMenuStrip
+            {
+                Renderer = new ModernTrayMenuRenderer(),
+                ShowImageMargin = true,
+                BackColor = Color.FromArgb(32, 32, 34),
+                ForeColor = Color.FromArgb(246, 247, 249),
+                Font = new Font("Segoe UI", 9.5f)
+            };
+
             contextMenu.Items.Add("Yenile", null, (s, e) => RefreshDockIcons());
+            contextMenu.Items.Add("-");
+
+            var appearanceMenu = new ToolStripMenuItem("Gorunum");
+            appearanceMenu.DropDownItems.Add("32x32 logo sec", null, (s, e) => SelectMenuLogo());
+            appearanceMenu.DropDownItems.Add("Varsayilan Windows logosu", null, (s, e) =>
+            {
+                CurrentSettings.MenuLogoPath = "";
+                SaveSettings();
+                RefreshDockIcons();
+            });
+            appearanceMenu.DropDownItems.Add("-");
+            appearanceMenu.DropDownItems.Add("Dock rengi", null, (s, e) =>
+                SelectColor(
+                    "Dock rengi",
+                    settings => settings.DockColorArgb,
+                    (settings, color) => settings.DockColorArgb = color,
+                    () =>
+                    {
+                        ApplyDockAppearance();
+                    },
+                    175));
+            appearanceMenu.DropDownItems.Add("Menu rengi", null, (s, e) =>
+                SelectColor(
+                    "Menu rengi",
+                    settings => settings.MenuColorArgb,
+                    (settings, color) => settings.MenuColorArgb = color,
+                    () =>
+                    {
+                        _startMenu?.Close();
+                    },
+                    175));
+            appearanceMenu.DropDownItems.Add("Arama kutusu rengi", null, (s, e) =>
+                SelectColor(
+                    "Arama kutusu rengi",
+                    settings => settings.SearchColorArgb,
+                    (settings, color) => settings.SearchColorArgb = color,
+                    () =>
+                    {
+                        _startMenu?.Close();
+                    },
+                    255));
+            contextMenu.Items.Add(appearanceMenu);
+
+            _startupMenuItem = new ToolStripMenuItem("Başlangıçta çalıştır")
+            {
+                CheckOnClick = true,
+                Checked = IsStartupEnabled()
+            };
+            _startupMenuItem.CheckedChanged += StartupMenuItem_CheckedChanged;
+            contextMenu.Items.Add(_startupMenuItem);
+            contextMenu.Opening += (s, e) => SyncStartupMenuState();
             contextMenu.Items.Add("-");
             contextMenu.Items.Add("Çıkış", null, (s, e) =>
             {
@@ -1246,6 +1800,126 @@ namespace OpenDock
 
             _trayIcon.ContextMenuStrip = contextMenu;
             _trayIcon.Visible = true;
+        }
+
+        private sealed class ModernTrayMenuRenderer : ToolStripProfessionalRenderer
+        {
+            public ModernTrayMenuRenderer()
+                : base(new ModernTrayColorTable())
+            {
+            }
+
+            protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
+            {
+                var rect = new Rectangle(Point.Empty, e.Item.Size);
+                if (e.Item.Selected)
+                {
+                    using var brush = new SolidBrush(Color.FromArgb(58, 58, 62));
+                    e.Graphics.FillRectangle(brush, rect);
+                    return;
+                }
+
+                using var bgBrush = new SolidBrush(Color.FromArgb(32, 32, 34));
+                e.Graphics.FillRectangle(bgBrush, rect);
+            }
+
+            protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
+            {
+                var y = e.Item.Height / 2;
+                using var pen = new Pen(Color.FromArgb(70, 255, 255, 255), 1f);
+                e.Graphics.DrawLine(pen, 8, y, e.Item.Width - 8, y);
+            }
+        }
+
+        private sealed class ModernTrayColorTable : ProfessionalColorTable
+        {
+            public override Color ToolStripDropDownBackground => Color.FromArgb(32, 32, 34);
+            public override Color ImageMarginGradientBegin => Color.FromArgb(32, 32, 34);
+            public override Color ImageMarginGradientMiddle => Color.FromArgb(32, 32, 34);
+            public override Color ImageMarginGradientEnd => Color.FromArgb(32, 32, 34);
+            public override Color MenuItemSelected => Color.FromArgb(58, 58, 62);
+            public override Color MenuItemBorder => Color.FromArgb(82, 82, 88);
+            public override Color SeparatorDark => Color.FromArgb(70, 255, 255, 255);
+            public override Color SeparatorLight => Color.FromArgb(70, 255, 255, 255);
+        }
+
+        private void SyncStartupMenuState()
+        {
+            if (_startupMenuItem == null)
+                return;
+
+            bool enabled = IsStartupEnabled();
+            if (_startupMenuItem.Checked == enabled)
+                return;
+
+            _isUpdatingStartupMenuState = true;
+            _startupMenuItem.Checked = enabled;
+            _isUpdatingStartupMenuState = false;
+        }
+
+        private void StartupMenuItem_CheckedChanged(object? sender, EventArgs e)
+        {
+            if (_startupMenuItem == null || _isUpdatingStartupMenuState)
+                return;
+
+            if (!SetStartupEnabled(_startupMenuItem.Checked))
+            {
+                _isUpdatingStartupMenuState = true;
+                _startupMenuItem.Checked = !_startupMenuItem.Checked;
+                _isUpdatingStartupMenuState = false;
+                MessageBox.Show(
+                    "Başlangıç ayarı güncellenemedi.",
+                    "OpenDock",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Error);
+            }
+        }
+
+        private static string GetStartupRegistryValueName()
+        {
+            return "OpenDock";
+        }
+
+        private static string GetStartupCommand()
+        {
+            string exePath = Application.ExecutablePath;
+            return $"\"{exePath}\"";
+        }
+
+        private static bool IsStartupEnabled()
+        {
+            using var key = Registry.CurrentUser.OpenSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run", false);
+            string? value = key?.GetValue(GetStartupRegistryValueName()) as string;
+            if (string.IsNullOrWhiteSpace(value))
+                return false;
+
+            return string.Equals(value.Trim(), GetStartupCommand(), StringComparison.OrdinalIgnoreCase);
+        }
+
+        private static bool SetStartupEnabled(bool enabled)
+        {
+            try
+            {
+                using var key = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Windows\CurrentVersion\Run");
+                if (key == null)
+                    return false;
+
+                string valueName = GetStartupRegistryValueName();
+                if (enabled)
+                {
+                    key.SetValue(valueName, GetStartupCommand(), RegistryValueKind.String);
+                }
+                else
+                {
+                    key.DeleteValue(valueName, false);
+                }
+
+                return true;
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         protected override void OnFormClosing(FormClosingEventArgs e)
@@ -1276,11 +1950,11 @@ namespace OpenDock
             if (_startMenu != null && !_startMenu.IsDisposed)
             {
                 _startMenu.Close();
-                _startMenu = null;
                 return;
             }
 
             _startMenu = new StartMenuForm();
+            _startMenu.FormClosed += (s, e) => _startMenu = null;
             _startMenu.StartPosition = FormStartPosition.Manual;
             
             int w = 350;
@@ -1341,42 +2015,393 @@ namespace OpenDock
             public Icon AppIcon;
         }
 
+        private static List<InstalledApp>? _installedAppsCache;
+        private static DateTime _installedAppsCacheTime;
+        private static readonly object InstalledAppsCacheLock = new();
+        private static bool _isInstalledAppsCacheWarming;
+        private static readonly TimeSpan InstalledAppsCacheDuration = TimeSpan.FromMinutes(30);
+        private System.Windows.Forms.Timer? _openAnimationTimer;
+        private System.Windows.Forms.Timer? _closeAnimationTimer;
+        private Point _openAnimationTarget;
+        private Point _closeAnimationStart;
+        private int _openAnimationFrame;
+        private int _closeAnimationFrame;
+        private bool _isClosingWithAnimation;
+        private const int OpenAnimationFrames = 10;
+        private const int CloseAnimationFrames = 8;
+        private const int OpenAnimationOffsetY = 18;
+
+        private sealed class AppRowControl : Control
+        {
+            private readonly string _appName;
+            private readonly string _exePath;
+            private readonly Bitmap? _icon;
+            private bool _hovered;
+
+            public event EventHandler? Clicked;
+
+            public AppRowControl(string appName, string exePath, Bitmap? icon)
+            {
+                _appName = appName;
+                _exePath = exePath;
+                _icon = icon;
+                Text = appName;
+
+                SetStyle(
+                    ControlStyles.UserPaint |
+                    ControlStyles.AllPaintingInWmPaint |
+                    ControlStyles.OptimizedDoubleBuffer |
+                    ControlStyles.ResizeRedraw,
+                    true);
+
+                BackColor = Color.FromArgb(34, 34, 34);
+                ForeColor = Color.FromArgb(245, 247, 250);
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Regular, GraphicsUnit.Point);
+                Cursor = Cursors.Hand;
+            }
+
+            public bool MatchesFilter(string filter)
+            {
+                return string.IsNullOrWhiteSpace(filter) ||
+                       _appName.Contains(filter, StringComparison.OrdinalIgnoreCase);
+            }
+
+            protected override void OnMouseEnter(EventArgs e)
+            {
+                _hovered = true;
+                Invalidate();
+                base.OnMouseEnter(e);
+            }
+
+            protected override void OnMouseLeave(EventArgs e)
+            {
+                _hovered = false;
+                Invalidate();
+                base.OnMouseLeave(e);
+            }
+
+            protected override void OnClick(EventArgs e)
+            {
+                Clicked?.Invoke(this, e);
+                base.OnClick(e);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+
+                var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+                using (var path = RoundedRect(rect, 6))
+                using (var bgBrush = new SolidBrush(_hovered ? Color.FromArgb(235, 48, 48, 48) : Color.FromArgb(225, 34, 34, 34)))
+                using (var borderPen = new Pen(_hovered ? Color.FromArgb(130, 255, 255, 255) : Color.FromArgb(95, 255, 255, 255), 1f))
+                {
+                    g.FillPath(bgBrush, path);
+                    g.DrawPath(borderPen, path);
+                }
+
+                if (_icon != null)
+                {
+                    g.DrawImage(_icon, new Rectangle(8, 8, 24, 24));
+                }
+
+                var textRect = new RectangleF(40, 0, Width - 50, Height);
+                using var textBrush = new SolidBrush(ForeColor);
+                using var textFormat = new StringFormat(StringFormat.GenericTypographic)
+                {
+                    Alignment = StringAlignment.Near,
+                    LineAlignment = StringAlignment.Center,
+                    Trimming = StringTrimming.EllipsisCharacter,
+                    FormatFlags = StringFormatFlags.NoWrap
+                };
+                g.DrawString(_appName, Font, textBrush, textRect, textFormat);
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _icon?.Dispose();
+                }
+
+                base.Dispose(disposing);
+            }
+        }
+
+        private sealed class RoundedCommandButton : Control
+        {
+            private bool _hovered;
+            private bool _pressed;
+
+            public RoundedCommandButton()
+            {
+                SetStyle(
+                    ControlStyles.UserPaint |
+                    ControlStyles.AllPaintingInWmPaint |
+                    ControlStyles.OptimizedDoubleBuffer |
+                    ControlStyles.ResizeRedraw |
+                    ControlStyles.Selectable,
+                    true);
+
+                BackColor = Color.FromArgb(46, 46, 46);
+                ForeColor = Color.FromArgb(248, 249, 251);
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold, GraphicsUnit.Point);
+                Cursor = Cursors.Hand;
+                TabStop = true;
+            }
+
+            protected override void OnMouseEnter(EventArgs e)
+            {
+                _hovered = true;
+                Invalidate();
+                base.OnMouseEnter(e);
+            }
+
+            protected override void OnMouseLeave(EventArgs e)
+            {
+                _hovered = false;
+                _pressed = false;
+                Invalidate();
+                base.OnMouseLeave(e);
+            }
+
+            protected override void OnMouseDown(MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Left)
+                {
+                    _pressed = true;
+                    Invalidate();
+                }
+
+                base.OnMouseDown(e);
+            }
+
+            protected override void OnMouseUp(MouseEventArgs e)
+            {
+                _pressed = false;
+                Invalidate();
+                base.OnMouseUp(e);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+
+                Color fillColor = _pressed
+                    ? Color.FromArgb(70, 70, 70)
+                    : _hovered
+                        ? Color.FromArgb(62, 62, 62)
+                        : BackColor;
+
+                var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+                using (var path = RoundedRect(rect, 6))
+                using (var fillBrush = new SolidBrush(fillColor))
+                using (var borderPen = new Pen(Color.FromArgb(110, 255, 255, 255), 1f))
+                {
+                    g.FillPath(fillBrush, path);
+                    g.DrawPath(borderPen, path);
+                }
+
+                using var textBrush = new SolidBrush(ForeColor);
+                using var format = new StringFormat(StringFormat.GenericTypographic)
+                {
+                    Alignment = StringAlignment.Center,
+                    LineAlignment = StringAlignment.Center,
+                    Trimming = StringTrimming.EllipsisCharacter,
+                    FormatFlags = StringFormatFlags.NoWrap
+                };
+                g.DrawString(Text, Font, textBrush, ClientRectangle, format);
+            }
+        }
+
+        private sealed class SearchInputControl : Control
+        {
+            private const string Placeholder = "Aramak icin yazin...";
+            private string _value = "";
+
+            public event EventHandler? SearchTextChanged;
+
+            public string SearchText
+            {
+                get => _value;
+                private set
+                {
+                    if (_value == value)
+                        return;
+
+                    _value = value;
+                    SearchTextChanged?.Invoke(this, EventArgs.Empty);
+                    Invalidate();
+                }
+            }
+
+            public SearchInputControl()
+            {
+                SetStyle(
+                    ControlStyles.UserPaint |
+                    ControlStyles.AllPaintingInWmPaint |
+                    ControlStyles.OptimizedDoubleBuffer |
+                    ControlStyles.ResizeRedraw |
+                    ControlStyles.Selectable,
+                    true);
+
+                BackColor = Color.FromArgb(45, 45, 45);
+                ForeColor = Color.FromArgb(248, 249, 251);
+                Font = new Font("Segoe UI", 11f, FontStyle.Regular, GraphicsUnit.Point);
+                Cursor = Cursors.IBeam;
+                TabStop = true;
+            }
+
+            protected override bool IsInputKey(Keys keyData)
+            {
+                return keyData == Keys.Left ||
+                       keyData == Keys.Right ||
+                       keyData == Keys.Back ||
+                       keyData == Keys.Delete ||
+                       base.IsInputKey(keyData);
+            }
+
+            protected override void OnClick(EventArgs e)
+            {
+                Focus();
+                base.OnClick(e);
+            }
+
+            protected override void OnKeyDown(KeyEventArgs e)
+            {
+                if (e.KeyCode == Keys.Back && SearchText.Length > 0)
+                {
+                    SearchText = SearchText.Substring(0, SearchText.Length - 1);
+                    e.Handled = true;
+                }
+                else if (e.KeyCode == Keys.Escape)
+                {
+                    SearchText = "";
+                    e.Handled = true;
+                }
+
+                base.OnKeyDown(e);
+            }
+
+            protected override void OnKeyPress(KeyPressEventArgs e)
+            {
+                if (!char.IsControl(e.KeyChar))
+                {
+                    SearchText += e.KeyChar;
+                    e.Handled = true;
+                }
+
+                base.OnKeyPress(e);
+            }
+
+            protected override void OnGotFocus(EventArgs e)
+            {
+                Invalidate();
+                base.OnGotFocus(e);
+            }
+
+            protected override void OnLostFocus(EventArgs e)
+            {
+                Invalidate();
+                base.OnLostFocus(e);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+
+                var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+                using (var path = RoundedRect(rect, 6))
+                using (var bgBrush = new SolidBrush(BackColor))
+                using (var borderPen = new Pen(Focused ? Color.FromArgb(150, 255, 255, 255) : Color.FromArgb(85, 255, 255, 255), 1f))
+                {
+                    g.FillPath(bgBrush, path);
+                    g.DrawPath(borderPen, path);
+                }
+
+                string text = string.IsNullOrEmpty(SearchText) ? Placeholder : SearchText;
+                Color textColor = string.IsNullOrEmpty(SearchText)
+                    ? Color.FromArgb(150, 248, 249, 251)
+                    : ForeColor;
+
+                var textRect = new RectangleF(12, 0, Width - 24, Height);
+                using var textBrush = new SolidBrush(textColor);
+                using var textFormat = new StringFormat(StringFormat.GenericTypographic)
+                {
+                    Alignment = StringAlignment.Near,
+                    LineAlignment = StringAlignment.Center,
+                    Trimming = StringTrimming.EllipsisCharacter,
+                    FormatFlags = StringFormatFlags.NoWrap
+                };
+                g.DrawString(text, Font, textBrush, textRect, textFormat);
+
+                if (Focused)
+                {
+                    float textWidth = string.IsNullOrEmpty(SearchText)
+                        ? 0f
+                        : g.MeasureString(SearchText, Font, PointF.Empty, StringFormat.GenericTypographic).Width;
+                    float caretX = Math.Min(textRect.Left + textWidth + 1f, textRect.Right - 1f);
+                    using var caretPen = new Pen(ForeColor, 1f);
+                    g.DrawLine(caretPen, caretX, 7, caretX, Height - 7);
+                }
+            }
+        }
+
         public StartMenuForm()
         {
+            var configuredMenuColor = Color.FromArgb(Form1.CurrentSettings.MenuColorArgb);
+            var configuredSearchColor = Color.FromArgb(Form1.CurrentSettings.SearchColorArgb);
+            var menuColor = Color.FromArgb(255, configuredMenuColor.R, configuredMenuColor.G, configuredMenuColor.B);
+            var searchColor = Color.FromArgb(255, configuredSearchColor.R, configuredSearchColor.G, configuredSearchColor.B);
+
             this.DoubleBuffered = true; // Prevent flickering and graphics accumulation
             this.FormBorderStyle = FormBorderStyle.None;
-            this.BackColor = Color.FromArgb(28, 28, 28); // Windows 11 Koyu Tema Rengi
+            this.BackColor = menuColor; // Blur üstünde kullanılan ton
             this.ShowInTaskbar = false;
             this.TopMost = true;
+            this.Opacity = 0;
             this.Deactivate += (s, e) => this.Close();
+            this.HandleCreated += (s, e) => EnableBlur();
+            this.Activated += (s, e) => EnableBlur();
 
             // Set soft rounded corners manually using window region clipping (16px radius)
             this.Region = new Region(RoundedRect(new Rectangle(0, 0, 350, 450), 16));
 
-            // Add title
-            var titleLabel = new Label
+            var contentPanel = new Panel
             {
-                Text = "Uygulamalar",
-                ForeColor = Color.White,
-                Font = new Font("Segoe UI", 12f, FontStyle.Bold),
-                Location = new Point(20, 20),
-                AutoSize = true,
-                BackColor = Color.Transparent
+                Dock = DockStyle.Fill,
+                BackColor = menuColor,
+                Padding = new Padding(1)
             };
-            this.Controls.Add(titleLabel);
+            contentPanel.Paint += (s, e) =>
+            {
+                using var titleFont = new Font("Segoe UI", 12f, FontStyle.Bold, GraphicsUnit.Point);
+                e.Graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+                using var titleBrush = new SolidBrush(Color.FromArgb(248, 249, 251));
+                using var titleFormat = new StringFormat(StringFormat.GenericTypographic)
+                {
+                    Alignment = StringAlignment.Near,
+                    LineAlignment = StringAlignment.Center,
+                    FormatFlags = StringFormatFlags.NoWrap
+                };
+                e.Graphics.DrawString("Uygulamalar", titleFont, titleBrush, new RectangleF(20, 17, 220, 28), titleFormat);
+            };
+            this.Controls.Add(contentPanel);
 
-            // Search Box Placeholder (Borderless inside a painted rounded panel)
-            var searchBox = new TextBox
+            var searchBox = new SearchInputControl
             {
-                Width = 294,
-                Location = new Point(28, 66), // Positioned inside the rounded region drawn in OnPaint
-                Font = new Font("Segoe UI", 11f),
-                BackColor = Color.FromArgb(45, 45, 45),
-                ForeColor = Color.White,
-                BorderStyle = BorderStyle.None,
-                Text = "Aramak için yazın..."
+                Width = 310,
+                Height = 30,
+                Location = new Point(20, 58),
+                BackColor = searchColor,
+                ForeColor = Color.FromArgb(248, 249, 251)
             };
-            this.Controls.Add(searchBox);
+            contentPanel.Controls.Add(searchBox);
 
             // Container Panel to hide default scrollbar via clipping
             var flowLayoutContainer = new Panel
@@ -1384,9 +2409,9 @@ namespace OpenDock
                 Width = 300,
                 Height = 275,
                 Location = new Point(20, 105),
-                BackColor = Color.Transparent
+                BackColor = menuColor
             };
-            this.Controls.Add(flowLayoutContainer);
+            contentPanel.Controls.Add(flowLayoutContainer);
 
             // Pinned Apps flow panel (wider than container to push scrollbar off-screen)
             var flowLayout = new FlowLayoutPanel
@@ -1394,7 +2419,7 @@ namespace OpenDock
                 Width = 320,
                 Height = 275,
                 Location = new Point(0, 0),
-                BackColor = Color.Transparent,
+                BackColor = menuColor,
                 AutoScroll = true
             };
             flowLayoutContainer.Controls.Add(flowLayout);
@@ -1405,16 +2430,16 @@ namespace OpenDock
                 Width = 6,
                 Height = 275,
                 Location = new Point(325, 105),
-                BackColor = Color.Transparent
+                BackColor = menuColor
             };
-            this.Controls.Add(scrollTrack);
+            contentPanel.Controls.Add(scrollTrack);
 
             // Custom modern rounded scrollbar thumb
             var scrollThumb = new Panel
             {
                 Width = 6,
                 Height = 40,
-                BackColor = Color.FromArgb(80, 255, 255, 255),
+                BackColor = Color.FromArgb(95, 95, 95),
                 Cursor = Cursors.Hand
             };
             scrollTrack.Controls.Add(scrollThumb);
@@ -1430,8 +2455,6 @@ namespace OpenDock
                 };
                 wheelTimer.Start();
             };
-            flowLayout.ControlAdded += (s, e) => UpdateThumb(flowLayout, scrollThumb, scrollTrack.Height);
-
             // Scrollbar dragging logic
             bool isDragging = false;
             int dragStartY = 0;
@@ -1468,115 +2491,270 @@ namespace OpenDock
             };
 
             // Fetch installed apps from registry
-            var installedApps = GetInstalledApps();
+            var installedApps = GetInstalledAppsSnapshot();
+            WarmInstalledAppsCacheAsync();
 
-            foreach (var app in installedApps)
+            flowLayout.SuspendLayout();
+            try
             {
-                Bitmap? iconBmp = null;
-                try
+                foreach (var app in installedApps)
                 {
-                    iconBmp = new Bitmap(app.AppIcon.ToBitmap(), new Size(24, 24));
-                }
-                catch
-                {
-                    iconBmp = new Bitmap(SystemIcons.Application.ToBitmap(), new Size(24, 24));
-                }
-
-                var btn = new Button
-                {
-                    Text = app.Name,
-                    Width = 285,
-                    Height = 40,
-                    ForeColor = Color.White,
-                    BackColor = Color.FromArgb(40, 40, 40),
-                    FlatStyle = FlatStyle.Flat,
-                    TextAlign = ContentAlignment.MiddleLeft,
-                    ImageAlign = ContentAlignment.MiddleLeft,
-                    TextImageRelation = TextImageRelation.ImageBeforeText, // Yazı ve ikonun iç içe girmesini engeller
-                    Padding = new Padding(8, 0, 0, 0), // Kenar boşluğu
-                    Font = new Font("Segoe UI", 9.5f),
-                    Image = iconBmp
-                };
-                btn.FlatAppearance.BorderSize = 0;
-                btn.Region = new Region(RoundedRect(new Rectangle(0, 0, btn.Width, btn.Height), 6)); // Yumuşak buton köşeleri
-                btn.Click += (s, e) =>
-                {
+                    Bitmap? iconBmp = null;
                     try
                     {
-                        Process.Start(new ProcessStartInfo(app.ExePath) { UseShellExecute = true });
+                        iconBmp = new Bitmap(app.AppIcon.ToBitmap(), new Size(24, 24));
                     }
-                    catch { }
-                    this.Close();
-                };
-                flowLayout.Controls.Add(btn);
+                    catch
+                    {
+                        iconBmp = new Bitmap(SystemIcons.Application.ToBitmap(), new Size(24, 24));
+                    }
+
+                    var row = new AppRowControl(app.Name, app.ExePath, iconBmp);
+                    row.Width = 285;
+                    row.Height = 40;
+                    row.Cursor = Cursors.Hand;
+                    row.Clicked += (s, e) =>
+                    {
+                        try
+                        {
+                            Process.Start(new ProcessStartInfo(app.ExePath) { UseShellExecute = true });
+                        }
+                        catch { }
+
+                        this.Close();
+                    };
+                    flowLayout.Controls.Add(row);
+                }
             }
+            finally
+            {
+                flowLayout.ResumeLayout();
+            }
+            UpdateThumb(flowLayout, scrollThumb, scrollTrack.Height);
 
             // Search filtering logic
-            searchBox.GotFocus += (s, e) => {
-                if (searchBox.Text == "Aramak için yazın...")
-                    searchBox.Text = "";
-            };
-            searchBox.LostFocus += (s, e) => {
-                if (string.IsNullOrWhiteSpace(searchBox.Text))
-                    searchBox.Text = "Aramak için yazın...";
-            };
-            searchBox.TextChanged += (s, e) => {
-                string filter = searchBox.Text;
-                if (filter == "Aramak için yazın...") filter = "";
-                
-                foreach (Control ctrl in flowLayout.Controls)
+            searchBox.SearchTextChanged += (s, e) => {
+                string filter = searchBox.SearchText;
+
+                flowLayout.SuspendLayout();
+                try
                 {
-                    if (ctrl is Button btn)
+                    foreach (Control ctrl in flowLayout.Controls)
                     {
-                        bool matches = string.IsNullOrEmpty(filter) || 
-                                       btn.Text.Contains(filter, StringComparison.OrdinalIgnoreCase);
-                        btn.Visible = matches;
+                        if (ctrl is AppRowControl row)
+                        {
+                            row.Visible = row.MatchesFilter(filter);
+                        }
                     }
                 }
+                finally
+                {
+                    flowLayout.ResumeLayout();
+                }
+
+                BeginInvoke(new Action(() => UpdateThumb(flowLayout, scrollThumb, scrollTrack.Height)));
             };
 
             // Power control buttons at the bottom
-            var powerBtn = new Button
+            var powerBtn = new RoundedCommandButton
             {
                 Text = "Kapat",
                 Width = 80,
                 Height = 30,
                 Location = new Point(250, 400),
-                ForeColor = Color.White,
+                ForeColor = Color.FromArgb(248, 249, 251),
                 BackColor = Color.FromArgb(50, 50, 50),
-                FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 9f, FontStyle.Bold)
             };
-            powerBtn.FlatAppearance.BorderSize = 0;
-            powerBtn.Region = new Region(RoundedRect(new Rectangle(0, 0, powerBtn.Width, powerBtn.Height), 6));
             powerBtn.Click += (s, e) => {
                 if (MessageBox.Show("Bilgisayarı kapatmak istiyor musunuz?", "Sistem", MessageBoxButtons.YesNo) == DialogResult.Yes)
                 {
                     Process.Start("shutdown", "/s /t 0");
                 }
             };
-            this.Controls.Add(powerBtn);
+            contentPanel.Controls.Add(powerBtn);
 
-            var restartBtn = new Button
+            var restartBtn = new RoundedCommandButton
             {
                 Text = "Yeniden Başlat",
                 Width = 110,
                 Height = 30,
                 Location = new Point(130, 400),
-                ForeColor = Color.White,
+                ForeColor = Color.FromArgb(248, 249, 251),
                 BackColor = Color.FromArgb(50, 50, 50),
-                FlatStyle = FlatStyle.Flat,
                 Font = new Font("Segoe UI", 9f, FontStyle.Bold)
             };
-            restartBtn.FlatAppearance.BorderSize = 0;
-            restartBtn.Region = new Region(RoundedRect(new Rectangle(0, 0, restartBtn.Width, restartBtn.Height), 6));
             restartBtn.Click += (s, e) => {
                 if (MessageBox.Show("Bilgisayarı yeniden başlatmak istiyor musunuz?", "Sistem", MessageBoxButtons.YesNo) == DialogResult.Yes)
                 {
                     Process.Start("shutdown", "/r /t 0");
                 }
             };
-            this.Controls.Add(restartBtn);
+            contentPanel.Controls.Add(restartBtn);
+
+            contentPanel.BringToFront();
+            searchBox.BringToFront();
+            flowLayoutContainer.BringToFront();
+            scrollTrack.BringToFront();
+            powerBtn.BringToFront();
+            restartBtn.BringToFront();
+
+            Shown += (s, e) =>
+            {
+                StartOpenAnimation();
+                UpdateThumb(flowLayout, scrollThumb, scrollTrack.Height);
+                searchBox.Focus();
+            };
+        }
+
+        private void StartOpenAnimation()
+        {
+            if (_isClosingWithAnimation)
+                return;
+
+            _openAnimationTimer?.Stop();
+            _openAnimationTimer?.Dispose();
+
+            _openAnimationTarget = Location;
+            _openAnimationFrame = 0;
+            Location = new Point(_openAnimationTarget.X, _openAnimationTarget.Y + OpenAnimationOffsetY);
+            Opacity = 0;
+
+            _openAnimationTimer = new System.Windows.Forms.Timer { Interval = 12 };
+            _openAnimationTimer.Tick += (s, e) =>
+            {
+                _openAnimationFrame++;
+                double progress = Math.Min(1.0, (double)_openAnimationFrame / OpenAnimationFrames);
+                double eased = 1.0 - Math.Pow(1.0 - progress, 3);
+
+                int y = _openAnimationTarget.Y + (int)Math.Round(OpenAnimationOffsetY * (1.0 - eased));
+                Location = new Point(_openAnimationTarget.X, y);
+                Opacity = eased;
+
+                if (progress >= 1.0)
+                {
+                    Location = _openAnimationTarget;
+                    Opacity = 1;
+                    _openAnimationTimer?.Stop();
+                    _openAnimationTimer?.Dispose();
+                    _openAnimationTimer = null;
+                }
+            };
+            _openAnimationTimer.Start();
+        }
+
+        private void StartCloseAnimation()
+        {
+            _openAnimationTimer?.Stop();
+            _openAnimationTimer?.Dispose();
+            _openAnimationTimer = null;
+
+            _closeAnimationTimer?.Stop();
+            _closeAnimationTimer?.Dispose();
+
+            _closeAnimationStart = Location;
+            _closeAnimationFrame = 0;
+
+            _closeAnimationTimer = new System.Windows.Forms.Timer { Interval = 12 };
+            _closeAnimationTimer.Tick += (s, e) =>
+            {
+                _closeAnimationFrame++;
+                double progress = Math.Min(1.0, (double)_closeAnimationFrame / CloseAnimationFrames);
+                double eased = 1.0 - Math.Pow(1.0 - progress, 3);
+
+                int y = _closeAnimationStart.Y + (int)Math.Round(OpenAnimationOffsetY * eased);
+                Location = new Point(_closeAnimationStart.X, y);
+                Opacity = 1.0 - eased;
+
+                if (progress >= 1.0)
+                {
+                    _closeAnimationTimer?.Stop();
+                    _closeAnimationTimer?.Dispose();
+                    _closeAnimationTimer = null;
+                    _isClosingWithAnimation = true;
+                    Close();
+                }
+            };
+            _closeAnimationTimer.Start();
+        }
+
+        protected override void OnFormClosing(FormClosingEventArgs e)
+        {
+            if (!_isClosingWithAnimation)
+            {
+                e.Cancel = true;
+                StartCloseAnimation();
+                return;
+            }
+
+            base.OnFormClosing(e);
+        }
+
+        protected override void OnFormClosed(FormClosedEventArgs e)
+        {
+            _openAnimationTimer?.Stop();
+            _openAnimationTimer?.Dispose();
+            _openAnimationTimer = null;
+            _closeAnimationTimer?.Stop();
+            _closeAnimationTimer?.Dispose();
+            _closeAnimationTimer = null;
+            base.OnFormClosed(e);
+        }
+
+        protected override void OnPaintBackground(PaintEventArgs e)
+        {
+            // Blur efektinin görünmesi için varsayılan arka plan boyamasını kapatıyoruz.
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.Clear(Color.Transparent);
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            var menuColor = Color.FromArgb(Form1.CurrentSettings.MenuColorArgb);
+            using (var path = RoundedRect(rect, 16))
+            using (var fillBrush = new SolidBrush(Color.FromArgb(175, menuColor.R, menuColor.G, menuColor.B)))
+            using (var borderPen = new Pen(Color.FromArgb(50, 255, 255, 255), 1.2f))
+            using (var glossBrush = new System.Drawing.Drawing2D.LinearGradientBrush(
+                rect,
+                Color.FromArgb(48, 255, 255, 255),
+                Color.FromArgb(8, 255, 255, 255),
+                System.Drawing.Drawing2D.LinearGradientMode.Vertical))
+            {
+                g.FillPath(fillBrush, path);
+                g.FillPath(glossBrush, path);
+                g.DrawPath(borderPen, path);
+            }
+        }
+
+        private void EnableBlur()
+        {
+            if (!IsHandleCreated)
+                return;
+
+            int cornerPref = 2;
+            DwmSetWindowAttribute(this.Handle, 33, ref cornerPref, sizeof(int));
+
+            var accent = new AccentPolicy
+            {
+                AccentState = AccentState.ACCENT_ENABLE_BLURBEHIND,
+                GradientColor = 0x55181818
+            };
+            var accentStructSize = Marshal.SizeOf(accent);
+            var accentPtr = Marshal.AllocHGlobal(accentStructSize);
+            Marshal.StructureToPtr(accent, accentPtr, false);
+
+            var data = new WindowCompositionAttributeData
+            {
+                Attribute = WindowCompositionAttribute.WCA_ACCENT_POLICY,
+                SizeOfData = accentStructSize,
+                Data = accentPtr
+            };
+
+            SetWindowCompositionAttribute(this.Handle, ref data);
+            Marshal.FreeHGlobal(accentPtr);
         }
 
         [DllImport("shell32.dll", CharSet = CharSet.Auto)]
@@ -1597,31 +2775,64 @@ namespace OpenDock
             return SystemIcons.Application;
         }
 
-        private static List<InstalledApp> GetInstalledApps()
+        private static List<InstalledApp> GetInstalledAppsSnapshot()
         {
+            lock (InstalledAppsCacheLock)
+            {
+                if (_installedAppsCache != null && DateTime.UtcNow - _installedAppsCacheTime < InstalledAppsCacheDuration)
+                {
+                    return _installedAppsCache;
+                }
+            }
+
             var list = new List<InstalledApp>();
+            AddDefaultInstalledApps(list);
+            return list;
+        }
 
-            // Entegre Windows Sistem Araçları (Manuel Ekleme)
-            list.Add(new InstalledApp
+        public static void WarmInstalledAppsCacheAsync()
+        {
+            lock (InstalledAppsCacheLock)
             {
-                Name = "Ayarlar",
-                ExePath = "ms-settings:",
-                AppIcon = GetSystemIcon(21) // Çark (Settings) ikonu
-            });
+                if (_isInstalledAppsCacheWarming ||
+                    (_installedAppsCache != null && DateTime.UtcNow - _installedAppsCacheTime < InstalledAppsCacheDuration))
+                {
+                    return;
+                }
 
-            list.Add(new InstalledApp
-            {
-                Name = "Microsoft Store",
-                ExePath = "ms-windows-store://home",
-                AppIcon = GetSystemIcon(14) // Mağaza/Paket ikonu
-            });
+                _isInstalledAppsCacheWarming = true;
+            }
 
-            list.Add(new InstalledApp
+            _ = System.Threading.Tasks.Task.Run(() =>
             {
-                Name = "Denetim Masası",
-                ExePath = "control.exe",
-                AppIcon = GetSystemIcon(26) // Denetim masası ikonu
+                try
+                {
+                    GetInstalledApps(forceRefresh: true);
+                }
+                finally
+                {
+                    lock (InstalledAppsCacheLock)
+                    {
+                        _isInstalledAppsCacheWarming = false;
+                    }
+                }
             });
+        }
+
+        private static List<InstalledApp> GetInstalledApps(bool forceRefresh = false)
+        {
+            lock (InstalledAppsCacheLock)
+            {
+                if (!forceRefresh &&
+                    _installedAppsCache != null &&
+                    DateTime.UtcNow - _installedAppsCacheTime < InstalledAppsCacheDuration)
+                {
+                    return _installedAppsCache;
+                }
+            }
+
+            var list = new List<InstalledApp>();
+            AddDefaultInstalledApps(list);
 
             var registryList = new List<InstalledApp>();
             string[] registryKeys = {
@@ -1696,8 +2907,13 @@ namespace OpenDock
                                 if (string.IsNullOrWhiteSpace(exePath) || !System.IO.File.Exists(exePath))
                                     continue;
 
-                                if (registryList.Exists(x => x.Name.Equals(displayName, StringComparison.OrdinalIgnoreCase)))
+                                if (list.Exists(x => x.Name.Equals(displayName, StringComparison.OrdinalIgnoreCase) ||
+                                                     x.ExePath.Equals(exePath, StringComparison.OrdinalIgnoreCase)) ||
+                                    registryList.Exists(x => x.Name.Equals(displayName, StringComparison.OrdinalIgnoreCase) ||
+                                                             x.ExePath.Equals(exePath, StringComparison.OrdinalIgnoreCase)))
+                                {
                                     continue;
+                                }
 
                                 Icon? icon = null;
                                 try
@@ -1723,7 +2939,80 @@ namespace OpenDock
             registryList.Sort((x, y) => string.Compare(x.Name, y.Name, StringComparison.OrdinalIgnoreCase));
             list.AddRange(registryList);
 
+            lock (InstalledAppsCacheLock)
+            {
+                _installedAppsCache = list;
+                _installedAppsCacheTime = DateTime.UtcNow;
+            }
+
             return list;
+        }
+
+        private static void AddDefaultInstalledApps(List<InstalledApp> list)
+        {
+            // Entegre Windows Sistem Araçları (Manuel Ekleme)
+            list.Add(new InstalledApp
+            {
+                Name = "Ayarlar",
+                ExePath = "ms-settings:",
+                AppIcon = GetSystemIcon(21) // Çark (Settings) ikonu
+            });
+
+            list.Add(new InstalledApp
+            {
+                Name = "Microsoft Store",
+                ExePath = "ms-windows-store://home",
+                AppIcon = GetSystemIcon(14) // Mağaza/Paket ikonu
+            });
+
+            list.Add(new InstalledApp
+            {
+                Name = "Denetim Masası",
+                ExePath = "control.exe",
+                AppIcon = GetSystemIcon(26) // Denetim masası ikonu
+            });
+
+            AddInstalledAppIfExists(
+                list,
+                "Notepad",
+                System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.Windows), "System32", "notepad.exe"));
+
+            AddInstalledAppIfExists(
+                list,
+                "Notepad++",
+                System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles), "Notepad++", "notepad++.exe"));
+
+            AddInstalledAppIfExists(
+                list,
+                "Notepad++",
+                System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ProgramFilesX86), "Notepad++", "notepad++.exe"));
+        }
+
+        private static void AddInstalledAppIfExists(List<InstalledApp> list, string name, string exePath)
+        {
+            if (string.IsNullOrWhiteSpace(exePath) || !System.IO.File.Exists(exePath))
+                return;
+
+            if (list.Exists(app =>
+                    app.Name.Equals(name, StringComparison.OrdinalIgnoreCase) ||
+                    app.ExePath.Equals(exePath, StringComparison.OrdinalIgnoreCase)))
+            {
+                return;
+            }
+
+            Icon? icon = null;
+            try
+            {
+                icon = Icon.ExtractAssociatedIcon(exePath);
+            }
+            catch { }
+
+            list.Add(new InstalledApp
+            {
+                Name = name,
+                ExePath = exePath,
+                AppIcon = icon ?? SystemIcons.Application
+            });
         }
 
         private static void UpdateThumb(FlowLayoutPanel flp, Panel thumb, int trackHeight)
@@ -1745,29 +3034,6 @@ namespace OpenDock
             float percent = (float)flp.VerticalScroll.Value / maxScroll;
             int thumbY = (int)(percent * (trackHeight - thumbHeight));
             thumb.Location = new Point(0, thumbY);
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            var g = e.Graphics;
-            g.Clear(this.BackColor); // Clear background to prevent transparency accumulation (stops whiteness accumulation)
-            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-
-            // Draw a subtle white border matching the main dock (using same 16px radius)
-            using (var path = RoundedRect(new Rectangle(0, 0, Width - 1, Height - 1), 16))
-            using (var borderPen = new Pen(Color.FromArgb(40, 255, 255, 255), 1.5f))
-            {
-                g.DrawPath(borderPen, path);
-            }
-
-            // Draw a rounded background for the Search Box (Y = 60, Height = 28, Width = 310, X = 20)
-            using (var searchPath = RoundedRect(new Rectangle(20, 60, 310, 28), 6))
-            using (var searchBgBrush = new SolidBrush(Color.FromArgb(45, 45, 45)))
-            using (var searchBorderPen = new Pen(Color.FromArgb(60, 255, 255, 255), 1f))
-            {
-                g.FillPath(searchBgBrush, searchPath);
-                g.DrawPath(searchBorderPen, searchPath);
-            }
         }
 
         private static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle bounds, int radius)
