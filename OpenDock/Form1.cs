@@ -80,6 +80,21 @@ namespace OpenDock
         private const int GWL_EXSTYLE = -20;
         private const int WS_EX_TOOLWINDOW = 0x00000080;
         private const int WS_EX_APPWINDOW = 0x00040000;
+        private const int WS_EX_NOACTIVATE = 0x08000000; // Prevents the window from being activated on click
+
+        [DllImport("user32.dll", EntryPoint = "SetWindowLong")]
+        private static extern int SetWindowLong32(IntPtr hWnd, int nIndex, int dwNewLong);
+
+        [DllImport("user32.dll", EntryPoint = "SetWindowLongPtr")]
+        private static extern IntPtr SetWindowLongPtr64(IntPtr hWnd, int nIndex, IntPtr dwNewLong);
+
+        private static IntPtr SetWindowLong(IntPtr hWnd, int nIndex, IntPtr dwNewLong)
+        {
+            if (IntPtr.Size == 8)
+                return SetWindowLongPtr64(hWnd, nIndex, dwNewLong);
+            else
+                return new IntPtr(SetWindowLong32(hWnd, nIndex, dwNewLong.ToInt32()));
+        }
 
         private static string GetWindowClassName(IntPtr hWnd)
         {
@@ -378,6 +393,9 @@ namespace OpenDock
                 var scaled = new Bitmap(windowWidth, windowHeight, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
                 using (var g = Graphics.FromImage(scaled))
                 {
+                    // Draw a nearly invisible background to capture clicks over the entire bounds (fixes small click target bug)!
+                    g.Clear(Color.FromArgb(1, 0, 0, 0));
+
                     g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                     g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
@@ -622,8 +640,11 @@ namespace OpenDock
         private readonly List<DockItemData> _dockItems = new();
         private const int MaxIconSize = 48; // pencerelerin SABİT, hiç değişmeyen tuval boyutu
         private System.Windows.Forms.Timer _hoverCheckTimer = null!;
+        private System.Windows.Forms.Timer _autoRefreshTimer = null!;
         private NotifyIcon? _trayIcon;
         private int _separatorX = -1;
+        private static readonly string OrderFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dock_order.txt");
+        private List<string> _savedOrder = new();
 
         // Fareyi her ikonun SABT orijinal (bymeden nceki) alanna gre kontrol eder.
         // Bylece byyen/kayan pencere snrlar hover durumunu etkilemez, titreme biter.
@@ -673,11 +694,17 @@ namespace OpenDock
         private void Form1_Load(object sender, EventArgs e)
         {
             this.SuspendLayout();
+            LoadDockOrder();
             RefreshDockIcons();
             EnableBlur();
             _hoverCheckTimer = new System.Windows.Forms.Timer { Interval = 20 };
             _hoverCheckTimer.Tick += (s, e) => CheckHoverStates();
             _hoverCheckTimer.Start();
+
+            _autoRefreshTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+            _autoRefreshTimer.Tick += (s, e) => CheckForWindowChanges();
+            _autoRefreshTimer.Start();
+
             this.Activated += (s, e) => EnableBlur();
             this.Deactivate += (s, e) => EnableBlur();
             InitializeTrayIcon();
@@ -697,80 +724,119 @@ namespace OpenDock
             {
                 item.AnimTimer.Stop();
                 item.AnimTimer.Dispose();
+                item.Owner.Hide(); // İkonu ekrandan ANINDA gizle (iç içe geçmeyi ve hayalet ikonları önler)
                 item.Owner.Close();
                 item.Owner.Dispose();
             }
             _dockItems.Clear();
 
-            int startX = 25;      // Sol boşluk
-            int spacing = 15;     // ikonlar arası mesafe
-            int baseSize = 32;    // Başlangıç boyutu
-            int defaultY = this.Height - baseSize - 12;
+            int baseSize = 32;
+            int defaultY = (this.Height - baseSize) / 2;
 
-            var seenProcessNames = new HashSet<string>();
-            var windowList = new List<IntPtr>();
+            var seenProcessNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            var tempWindows = new List<(IntPtr hwnd, string procName, Process proc)>();
 
-            EnumWindows((hWnd, lParam) =>
+            // Collect all matching open windows first
+            EnumWindows((hwnd, lParam) =>
             {
-                windowList.Add(hWnd);
+                if (ShouldShowProcessWindow(hwnd))
+                {
+                    GetWindowThreadProcessId(hwnd, out uint pid);
+                    if (pid != 0)
+                    {
+                        try
+                        {
+                            var proc = Process.GetProcessById((int)pid);
+                            string procName = proc.ProcessName;
+
+                            if (!procName.Equals("OpenDock", StringComparison.OrdinalIgnoreCase) &&
+                                !procName.Equals("idle", StringComparison.OrdinalIgnoreCase))
+                            {
+                                if (procName.Equals("explorer", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    string className = GetWindowClassName(hwnd);
+                                    if (className.Equals("CabinetWClass", StringComparison.OrdinalIgnoreCase) ||
+                                        className.Equals("ExploreWClass", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        if (seenProcessNames.Add(procName))
+                                        {
+                                            tempWindows.Add((hwnd, procName, proc));
+                                        }
+                                        else
+                                        {
+                                            proc.Dispose();
+                                        }
+                                    }
+                                    else
+                                    {
+                                        proc.Dispose();
+                                    }
+                                }
+                                else
+                                {
+                                    if (seenProcessNames.Add(procName))
+                                    {
+                                        tempWindows.Add((hwnd, procName, proc));
+                                    }
+                                    else
+                                    {
+                                        proc.Dispose();
+                                    }
+                                }
+                            }
+                            else
+                            {
+                                proc.Dispose();
+                            }
+                        }
+                        catch { }
+                    }
+                }
                 return true;
             }, IntPtr.Zero);
 
-            foreach (IntPtr hwnd in windowList)
+            // Add newly discovered applications to the end of our saved order list
+            bool orderUpdated = false;
+            foreach (var item in tempWindows)
             {
-                IconWindow? iconWindow = null;
-                Process? proc = null;
+                if (!_savedOrder.Contains(item.procName, StringComparer.OrdinalIgnoreCase))
+                {
+                    _savedOrder.Add(item.procName);
+                    orderUpdated = true;
+                }
+            }
+            if (orderUpdated)
+            {
+                SaveDockOrder();
+            }
+
+            // Sort discovered windows according to their index in the saved order list
+            tempWindows.Sort((x, y) =>
+            {
+                int idxX = _savedOrder.FindIndex(name => name.Equals(x.procName, StringComparison.OrdinalIgnoreCase));
+                int idxY = _savedOrder.FindIndex(name => name.Equals(y.procName, StringComparison.OrdinalIgnoreCase));
+                return idxX.CompareTo(idxY);
+            });
+
+            // Create dock items in the sorted order
+            int startX = 25;
+            foreach (var winItem in tempWindows)
+            {
+                IntPtr hwnd = winItem.hwnd;
+                string procName = winItem.procName;
+                Process proc = winItem.proc;
+
                 try
                 {
-                    if (hwnd == IntPtr.Zero) continue;
-
-                    string title = GetWindowTitle(hwnd);
-                    if (string.IsNullOrWhiteSpace(title)) continue;
-
-                    GetWindowThreadProcessId(hwnd, out uint pid);
-                    if (pid == 0) continue;
-
-                    try
-                    {
-                        proc = Process.GetProcessById((int)pid);
-                    }
-                    catch
-                    {
-                        continue;
-                    }
-
-                    if (proc == null) continue;
-
-                    string procName = proc.ProcessName;
-                    if (procName.Equals("OpenDock", StringComparison.OrdinalIgnoreCase))
-                    {
-                        continue;
-                    }
-
-                    if (procName.Equals("explorer", StringComparison.OrdinalIgnoreCase))
-                    {
-                        string className = GetWindowClassName(hwnd);
-                        if (!className.Equals("CabinetWClass", StringComparison.OrdinalIgnoreCase) &&
-                            !className.Equals("ExploreWClass", StringComparison.OrdinalIgnoreCase))
-                        {
-                            continue; // Skip explorer taskbars, start menus, backgrounds, tray, etc.
-                        }
-                    }
-
-                    if (!ShouldShowProcessWindow(hwnd)) continue;
-
-                    if (!seenProcessNames.Add(procName)) continue;
-
                     string path = GetProcessFilePath(proc);
                     if (string.IsNullOrEmpty(path)) continue;
 
                     Icon? icon = GetHighQualityIcon(path);
                     if (icon == null) continue;
 
-                    // Dock içindeki göreli konumu ekran koordinatına çeviriyoruz,
-                    // çünkü IconWindow artık bağımsız bir top-level pencere.
                     Point screenLocation = new Point(this.Left + startX, this.Top + defaultY);
-                    iconWindow = new IconWindow(MaxIconSize);
+                    var iconWindow = new IconWindow(MaxIconSize);
+                    
                     string displayName = "";
                     try
                     {
@@ -822,15 +888,10 @@ namespace OpenDock
                     iconWindow.Show(this); // this = sahibi (owner), her zaman dock'un üzerinde durur
                     iconWindow.UpdateBounds(screenLocation.X, screenLocation.Y, baseSize); // handle artık var - ilk çizimi garanti altına al
                     _dockItems.Add(animData);
-                    startX += baseSize + spacing;
+                    startX += baseSize + 15;
                 }
                 catch
                 {
-                    if (iconWindow != null)
-                    {
-                        iconWindow.Close();
-                        iconWindow.Dispose();
-                    }
                     continue;
                 }
                 finally
@@ -882,23 +943,119 @@ namespace OpenDock
                 g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
                 g.Clear(Color.Transparent);
 
+                // Add a small margin to shrink the logo slightly (15% padding)
+                float margin = size * 0.15f;
+                float drawSize = size - (margin * 2);
+
                 // Draw modern Windows 11 logo (4 white/semi-transparent squares)
                 using (var brush = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
                 {
-                    float gap = size * 0.08f;
-                    float half = (size - gap) / 2f;
+                    float gap = drawSize * 0.08f;
+                    float half = (drawSize - gap) / 2f;
 
                     // Top Left
-                    g.FillRectangle(brush, 0, 0, half, half);
+                    g.FillRectangle(brush, margin, margin, half, half);
                     // Top Right
-                    g.FillRectangle(brush, half + gap, 0, half, half);
+                    g.FillRectangle(brush, margin + half + gap, margin, half, half);
                     // Bottom Left
-                    g.FillRectangle(brush, 0, half + gap, half, half);
+                    g.FillRectangle(brush, margin, margin + half + gap, half, half);
                     // Bottom Right
-                    g.FillRectangle(brush, half + gap, half + gap, half, half);
+                    g.FillRectangle(brush, margin + half + gap, margin + half + gap, half, half);
                 }
             }
             return bmp;
+        }
+
+        private void LoadDockOrder()
+        {
+            try
+            {
+                if (System.IO.File.Exists(OrderFilePath))
+                {
+                    _savedOrder = System.IO.File.ReadAllLines(OrderFilePath)
+                                      .Select(line => line.Trim())
+                                      .Where(line => !string.IsNullOrEmpty(line))
+                                      .ToList();
+                }
+            }
+            catch { }
+        }
+
+        private void SaveDockOrder()
+        {
+            try
+            {
+                System.IO.File.WriteAllLines(OrderFilePath, _savedOrder);
+            }
+            catch { }
+        }
+
+        private void CheckForWindowChanges()
+        {
+            var currentHandles = new List<IntPtr>();
+            var seenProcessNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+            EnumWindows((hwnd, lParam) =>
+            {
+                if (ShouldShowProcessWindow(hwnd))
+                {
+                    GetWindowThreadProcessId(hwnd, out uint pid);
+                    if (pid != 0)
+                    {
+                        try
+                        {
+                            using (var proc = Process.GetProcessById((int)pid))
+                            {
+                                string procName = proc.ProcessName;
+                                if (!procName.Equals("OpenDock", StringComparison.OrdinalIgnoreCase) &&
+                                    !procName.Equals("idle", StringComparison.OrdinalIgnoreCase))
+                                {
+                                    if (procName.Equals("explorer", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        string className = GetWindowClassName(hwnd);
+                                        if (className.Equals("CabinetWClass", StringComparison.OrdinalIgnoreCase) ||
+                                            className.Equals("ExploreWClass", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            if (seenProcessNames.Add(procName))
+                                            {
+                                                currentHandles.Add(hwnd);
+                                            }
+                                        }
+                                    }
+                                    else
+                                    {
+                                        if (seenProcessNames.Add(procName))
+                                        {
+                                            currentHandles.Add(hwnd);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        catch { }
+                    }
+                }
+                return true;
+            }, IntPtr.Zero);
+
+            var existingHandles = new List<IntPtr>();
+            foreach (var item in _dockItems)
+            {
+                if (item.WindowHandle != IntPtr.Zero)
+                {
+                    existingHandles.Add(item.WindowHandle);
+                }
+            }
+
+            // Compare sets of handles (order-independent) to prevent refreshing on window focus/Z-order changes
+            var currentSet = new HashSet<IntPtr>(currentHandles);
+            var existingSet = new HashSet<IntPtr>(existingHandles);
+            bool changed = !currentSet.SetEquals(existingSet);
+
+            if (changed)
+            {
+                RefreshDockIcons();
+            }
         }
 
         // Animasyon Hesaplama Motoru (Delta Zamanlı Geçiş)
@@ -970,16 +1127,32 @@ namespace OpenDock
         }
 
         private const int WM_ERASEBKGND = 0x0014;
+        private const int WM_NCACTIVATE = 0x0086;
+
+        protected override CreateParams CreateParams
+        {
+            get
+            {
+                var cp = base.CreateParams;
+                cp.ExStyle |= WS_EX_NOACTIVATE; // Never let dock steal focus - blur stays active forever
+                return cp;
+            }
+        }
 
         protected override void WndProc(ref Message m)
         {
             if (m.Msg == WM_ERASEBKGND)
             {
-                // GDI'nn dz siyah dolgusunu engelle  Mica'nn zerine boyanmasn.
-                // "lendi" diyoruz ama hibir ey izmiyoruz, DWM zaten arkada composite ediyor.
                 m.Result = (IntPtr)1;
                 return;
             }
+
+            // Keep Acrylic blur active when losing focus
+            if (m.Msg == WM_NCACTIVATE)
+            {
+                m.WParam = (IntPtr)1;
+            }
+
             base.WndProc(ref m);
         }
 
@@ -990,15 +1163,19 @@ namespace OpenDock
 
         private void EnableBlur()
         {
+            // Apply WS_EX_NOACTIVATE at runtime too (belt-and-suspenders)
+            IntPtr exStyle = GetWindowLongPtr(this.Handle, GWL_EXSTYLE);
+            SetWindowLong(this.Handle, GWL_EXSTYLE, new IntPtr(exStyle.ToInt32() | WS_EX_NOACTIVATE));
+
             // DWM corner rounding
-            int cornerPref = 2; // DWMWCP_ROUND - Köşeleri yuvarla
+            int cornerPref = 2;
             DwmSetWindowAttribute(this.Handle, 33, ref cornerPref, sizeof(int));
 
-            // Set Window Composition Accent Policy for Acrylic Blur
+            // Set Window Composition Accent Policy for Aero Blur (keeps blur active when deactivated)
             var accent = new AccentPolicy
             {
-                AccentState = AccentState.ACCENT_ENABLE_ACRYLICBLURBEHIND,
-                GradientColor = 0x60121212 // Yarı saydam koyu cam tonu (Acrylic) ve arkadaki pencerelerin renklerini blurlama
+                AccentState = AccentState.ACCENT_ENABLE_BLURBEHIND,
+                GradientColor = 0x35121212
             };
             var accentStructSize = Marshal.SizeOf(accent);
             var accentPtr = Marshal.AllocHGlobal(accentStructSize);
@@ -1017,9 +1194,8 @@ namespace OpenDock
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            base.OnPaint(e);
-
             var g = e.Graphics;
+            g.Clear(Color.Transparent); // Clear canvas to prevent gradient accumulation (stops whiteness accumulation)
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
             int softness = 8;
@@ -1167,6 +1343,7 @@ namespace OpenDock
 
         public StartMenuForm()
         {
+            this.DoubleBuffered = true; // Prevent flickering and graphics accumulation
             this.FormBorderStyle = FormBorderStyle.None;
             this.BackColor = Color.FromArgb(28, 28, 28); // Windows 11 Koyu Tema Rengi
             this.ShowInTaskbar = false;
@@ -1572,8 +1749,8 @@ namespace OpenDock
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            base.OnPaint(e);
             var g = e.Graphics;
+            g.Clear(this.BackColor); // Clear background to prevent transparency accumulation (stops whiteness accumulation)
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
             // Draw a subtle white border matching the main dock (using same 16px radius)
