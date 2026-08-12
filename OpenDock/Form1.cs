@@ -80,6 +80,10 @@ namespace OpenDock
 
         private delegate bool EnumWindowsProc(IntPtr hWnd, IntPtr lParam);
 
+        private const byte VK_CONTROL = 0x11;
+        private const byte VK_LEFT = 0x25;
+        private const byte VK_RIGHT = 0x27;
+
         [DllImport("user32.dll", SetLastError = true)]
         private static extern uint GetWindowThreadProcessId(IntPtr hWnd, out uint lpdwProcessId);
 
@@ -961,6 +965,7 @@ namespace OpenDock
             LoadDockOrder();
             RefreshDockIcons();
             EnableBlur();
+            
             _hoverCheckTimer = new System.Windows.Forms.Timer { Interval = 20 };
             _hoverCheckTimer.Tick += (s, e) => CheckHoverStates();
             _hoverCheckTimer.Start();
@@ -1322,10 +1327,20 @@ namespace OpenDock
                         if (e.Button != MouseButtons.Left)
                             return;
 
-                        if (animData.IsOpen && animData.WindowHandle != IntPtr.Zero)
+                        if (animData.IsOpen)
                         {
-                            FocusWindow(animData.WindowHandle);
-                            return;
+                            var openWindows = GetOpenWindowsForApp(animData);
+                            if (openWindows.Count > 1)
+                            {
+                                ShowWindowPreviews(openWindows, animData.DisplayName, iconWindow);
+                                return;
+                            }
+
+                            if (animData.WindowHandle != IntPtr.Zero)
+                            {
+                                FocusWindow(animData.WindowHandle);
+                                return;
+                            }
                         }
 
                         try
@@ -1352,8 +1367,9 @@ namespace OpenDock
                 }
             }
 
-            // Draw a separator line and place the Windows button at the very bottom/right of the dock
-            int winButtonOffset = (isVertical ? this.Height : this.Width) - baseSize - 25;
+            // Draw a separator line and place the Windows button and Task View button at the very bottom/right of the dock
+            int winButtonOffset = (isVertical ? this.Height : this.Width) - (baseSize * 2) - 40;
+            int taskViewButtonOffset = (isVertical ? this.Height : this.Width) - baseSize - 25;
             int separatorOffset = winButtonOffset - 15;
             if (isVertical)
             {
@@ -1366,6 +1382,7 @@ namespace OpenDock
                 _separatorY = -1;
             }
 
+            // Create Windows Start Button
             try
             {
                 Point screenLocation;
@@ -1399,6 +1416,40 @@ namespace OpenDock
             }
             catch { }
 
+            // Create Task View Button (3 lines, modern Alt+Tab)
+            try
+            {
+                Point screenLocationTaskView;
+                if (isVertical)
+                    screenLocationTaskView = new Point(this.Left + defaultOffset, this.Top + taskViewButtonOffset);
+                else
+                    screenLocationTaskView = new Point(this.Left + taskViewButtonOffset, this.Top + defaultOffset);
+
+                var taskViewIconWindow = new IconWindow(MaxIconSize);
+                taskViewIconWindow.SetIconImage(GetTaskViewIconBitmap(baseSize), baseSize, "Görev Görünümü");
+
+                var taskViewAnimData = new DockItemData
+                {
+                    WindowHandle = IntPtr.Zero,
+                    OriginalLocation = screenLocationTaskView,
+                    OriginalSize = new Size(baseSize, baseSize),
+                    Owner = taskViewIconWindow,
+                    AnimTimer = new System.Windows.Forms.Timer { Interval = 15 }
+                };
+
+                taskViewAnimData.AnimTimer.Tick += (s, e) => UpdateAnimation(taskViewAnimData);
+                taskViewIconWindow.Cursor = Cursors.Hand;
+                taskViewIconWindow.Click += (s, e) =>
+                {
+                    StartCubeTransition(true);
+                };
+
+                taskViewIconWindow.Show(this);
+                taskViewIconWindow.UpdateBounds(screenLocationTaskView.X, screenLocationTaskView.Y, baseSize);
+                _dockItems.Add(taskViewAnimData);
+            }
+            catch { }
+
             this.Invalidate();
         }
 
@@ -1424,6 +1475,57 @@ namespace OpenDock
             }
 
             return GetWindowsLogoBitmap(size);
+        }
+
+        private Bitmap GetTaskViewIconBitmap(int size)
+        {
+            var bmp = new Bitmap(size, size, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.Clear(Color.Transparent);
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+                using (var pen = new Pen(Color.White, size * 0.08f))
+                {
+                    pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                    pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+
+                    float xStart = size * 0.2f;
+                    float xEnd = size * 0.8f;
+                    float gap = size * 0.2f;
+                    float yStart = size * 0.3f;
+
+                    g.DrawLine(pen, xStart, yStart, xEnd, yStart);
+                    g.DrawLine(pen, xStart, yStart + gap, xEnd, yStart + gap);
+                    g.DrawLine(pen, xStart, yStart + gap * 2, xEnd, yStart + gap * 2);
+                }
+            }
+            return bmp;
+        }
+
+        [DllImport("user32.dll")]
+        private static extern void keybd_event(byte bVk, byte bScan, uint dwFlags, int dwExtraInfo);
+        private const byte VK_LWIN = 0x5B;
+        private const byte VK_TAB = 0x09;
+        private const uint KEYEVENTF_KEYUP = 0x0002;
+
+        private void TriggerTaskView()
+        {
+            try
+            {
+                keybd_event(VK_LWIN, 0, 0, 0);
+                keybd_event(VK_TAB, 0, 0, 0);
+                keybd_event(VK_TAB, 0, KEYEVENTF_KEYUP, 0);
+                keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, 0);
+            }
+            catch
+            {
+                try
+                {
+                    Process.Start(new ProcessStartInfo("explorer.exe", "shell:::{3080F90E-D7AD-11D9-BD98-0000947B0257}") { UseShellExecute = true });
+                }
+                catch { }
+            }
         }
 
         private Bitmap GetWindowsLogoBitmap(int size)
@@ -2488,6 +2590,74 @@ namespace OpenDock
             }
         }
 
+        private async void StartCubeTransition(bool right)
+        {
+            try
+            {
+                // 1. Capture current desktop A
+                Bitmap bmpA = CaptureScreen();
+
+                // 2. Switch to next desktop to capture B
+                SwitchDesktopOS(right);
+                await Task.Delay(180); // Wait for Windows slide animation to finish
+
+                // 3. Capture desktop B
+                Bitmap bmpB = CaptureScreen();
+
+                // 4. Switch back to current desktop A
+                SwitchDesktopOS(!right);
+                await Task.Delay(180); // Wait to return
+
+                // 5. Open and show the interactive 3D Cube Transition Form!
+                var transitionForm = new CubeTransitionForm(bmpA, bmpB, right, this);
+                transitionForm.Show();
+                transitionForm.Start();
+            }
+            catch 
+            {
+                // Fallback: if pre-capture fails, show at least A with fallbacks
+                try
+                {
+                    Bitmap bmpA = CaptureScreen();
+                    var transitionForm = new CubeTransitionForm(bmpA, null, right, this);
+                    transitionForm.Show();
+                    transitionForm.Start();
+                }
+                catch { }
+            }
+        }
+
+        internal void SwitchDesktopOS(bool right)
+        {
+            byte key = right ? VK_RIGHT : VK_LEFT;
+            keybd_event(VK_CONTROL, 0, 0, 0);
+            keybd_event(VK_LWIN, 0, 0, 0);
+            keybd_event(key, 0, 0, 0);
+            keybd_event(key, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_LWIN, 0, KEYEVENTF_KEYUP, 0);
+            keybd_event(VK_CONTROL, 0, KEYEVENTF_KEYUP, 0);
+        }
+
+        internal Bitmap CaptureScreen()
+        {
+            var bounds = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+            var bmp = new Bitmap(bounds.Width, bounds.Height, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.CopyFromScreen(bounds.X, bounds.Y, 0, 0, bounds.Size, CopyPixelOperation.SourceCopy);
+            }
+
+            // High-performance scaling for smooth 3D rendering
+            var scaled = new Bitmap(640, 360, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(scaled))
+            {
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Low;
+                g.DrawImage(bmp, 0, 0, 640, 360);
+            }
+            bmp.Dispose();
+            return scaled;
+        }
+
         protected override void OnFormClosing(FormClosingEventArgs e)
         {
             if (_clockForm != null && !_clockForm.IsDisposed)
@@ -2564,6 +2734,285 @@ namespace OpenDock
             _startMenu.Location = new Point(x, y);
 
             _startMenu.Show();
+        }
+
+        private List<IntPtr> GetOpenWindowsForApp(DockItemData animData)
+        {
+            var windows = new List<IntPtr>();
+            if (string.IsNullOrEmpty(animData.ExePath)) return windows;
+
+            string targetProcessName = System.IO.Path.GetFileNameWithoutExtension(animData.ExePath);
+            uint targetPid = 0;
+            if (animData.WindowHandle != IntPtr.Zero)
+            {
+                GetWindowThreadProcessId(animData.WindowHandle, out targetPid);
+            }
+
+            string? targetProcName = null;
+            if (targetPid != 0)
+            {
+                try { targetProcName = Process.GetProcessById((int)targetPid).ProcessName; } catch { }
+            }
+            if (string.IsNullOrEmpty(targetProcName))
+            {
+                targetProcName = targetProcessName;
+            }
+
+            var targetProcessIds = new HashSet<uint>();
+            foreach (var proc in Process.GetProcessesByName(targetProcName))
+            {
+                targetProcessIds.Add((uint)proc.Id);
+            }
+            if (targetPid != 0)
+            {
+                targetProcessIds.Add(targetPid);
+            }
+
+            EnumWindows((hwnd, lParam) =>
+            {
+                if (ShouldShowProcessWindow(hwnd))
+                {
+                    GetWindowThreadProcessId(hwnd, out uint pid);
+                    if (targetProcessIds.Contains(pid))
+                    {
+                        windows.Add(hwnd);
+                    }
+                }
+                return true;
+            }, IntPtr.Zero);
+
+            return windows;
+        }
+
+        private WindowPreviewForm? _windowPreview;
+        private void ShowWindowPreviews(List<IntPtr> windows, string appName, IconWindow iconWindow)
+        {
+            if (_windowPreview != null && !_windowPreview.IsDisposed)
+            {
+                _windowPreview.Close();
+            }
+
+            _windowPreview = new WindowPreviewForm(windows, appName, this);
+            
+            int previewWidth = _windowPreview.Width;
+            int previewHeight = _windowPreview.Height;
+
+            string pos = CurrentSettings.DockPosition;
+            int x = 0, y = 0;
+            if (pos.Equals("Bottom", StringComparison.OrdinalIgnoreCase))
+            {
+                x = iconWindow.Left + (iconWindow.Width - previewWidth) / 2;
+                y = iconWindow.Top - previewHeight - 10;
+            }
+            else if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
+            {
+                x = iconWindow.Left + (iconWindow.Width - previewWidth) / 2;
+                y = iconWindow.Bottom + 10;
+            }
+            else if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
+            {
+                x = iconWindow.Right + 10;
+                y = iconWindow.Top + (iconWindow.Height - previewHeight) / 2;
+            }
+            else if (pos.Equals("Right", StringComparison.OrdinalIgnoreCase))
+            {
+                x = iconWindow.Left - previewWidth - 10;
+                y = iconWindow.Top + (iconWindow.Height - previewHeight) / 2;
+            }
+
+            Rectangle bounds = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
+            if (x < bounds.Left) x = bounds.Left + 10;
+            if (x + previewWidth > bounds.Right) x = bounds.Right - previewWidth - 10;
+            if (y < bounds.Top) y = bounds.Top + 10;
+            if (y + previewHeight > bounds.Bottom) y = bounds.Bottom - previewHeight - 10;
+
+            _windowPreview.Location = new Point(x, y);
+            _windowPreview.Show();
+        }
+
+        public class WindowPreviewForm : Form
+        {
+            private readonly List<IntPtr> _windows;
+            private readonly List<IntPtr> _thumbnails = new();
+            private readonly Form1 _mainForm;
+
+            [DllImport("dwmapi.dll")]
+            private static extern int DwmRegisterThumbnail(IntPtr dest, IntPtr src, out IntPtr thumb);
+
+            [DllImport("dwmapi.dll")]
+            private static extern int DwmUnregisterThumbnail(IntPtr thumb);
+
+            [DllImport("dwmapi.dll")]
+            private static extern int DwmUpdateThumbnailProperties(IntPtr thumb, ref DWM_THUMBNAIL_PROPERTIES props);
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct DWM_THUMBNAIL_PROPERTIES
+            {
+                public uint dwFlags;
+                public Form1.RECT rcDestination;
+                public Form1.RECT rcSource;
+                public byte opacity;
+                public bool fVisible;
+                public bool fSourceClientAreaOnly;
+            }
+
+            private const uint DWM_TNP_RECTDESTINATION = 0x00000001;
+            private const uint DWM_TNP_VISIBLE = 0x00000008;
+            private const uint DWM_TNP_OPACITY = 0x00000004;
+            private const uint DWM_TNP_SOURCECLIENTAREAONLY = 0x00000010;
+
+            [DllImport("user32.dll")]
+            private static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref Form1.WindowCompositionAttributeData data);
+
+            public WindowPreviewForm(List<IntPtr> windows, string appName, Form1 mainForm)
+            {
+                _windows = windows;
+                _mainForm = mainForm;
+
+                var configuredMenuColor = Color.FromArgb(Form1.CurrentSettings.MenuColorArgb);
+                var menuColor = Color.FromArgb(255, configuredMenuColor.R, configuredMenuColor.G, configuredMenuColor.B);
+
+                this.DoubleBuffered = true;
+                this.FormBorderStyle = FormBorderStyle.None;
+                this.BackColor = menuColor;
+                this.ShowInTaskbar = false;
+                this.TopMost = true;
+                this.Deactivate += (s, e) => this.Close();
+                this.HandleCreated += (s, e) => EnableBlur();
+                this.Activated += (s, e) => EnableBlur();
+
+                int itemWidth = 280;
+                int itemHeight = 210;
+                int margin = 20;
+                int count = windows.Count;
+
+                int width = (itemWidth * count) + (margin * (count + 1));
+                int height = itemHeight + (margin * 2);
+
+                this.Size = new Size(width, height);
+                this.Region = new Region(Form1.RoundedRect(new Rectangle(0, 0, width, height), 16));
+
+                for (int i = 0; i < count; i++)
+                {
+                    IntPtr hwnd = windows[i];
+                    int index = i;
+
+                    var panel = new Panel
+                    {
+                        Width = itemWidth,
+                        Height = itemHeight,
+                        Location = new Point(margin + (i * (itemWidth + margin)), margin),
+                        BackColor = Color.Transparent,
+                        Cursor = Cursors.Hand
+                    };
+
+                    var titleText = new System.Text.StringBuilder(256);
+                    Form1.GetWindowText(hwnd, titleText, titleText.Capacity);
+                    string titleStr = titleText.ToString();
+
+                    bool isHovered = false;
+                    panel.MouseEnter += (s, e) => { isHovered = true; panel.Invalidate(); };
+                    panel.MouseLeave += (s, e) => { isHovered = false; panel.Invalidate(); };
+
+                    panel.Paint += (s, e) =>
+                    {
+                        var g = e.Graphics;
+                        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                        g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+
+                        // Draw background container
+                        using (var path = Form1.RoundedRect(new Rectangle(0, 0, panel.Width - 1, panel.Height - 1), 10))
+                        {
+                            Color fill = isHovered ? Color.FromArgb(45, 255, 255, 255) : Color.FromArgb(15, 255, 255, 255);
+                            using (var brush = new SolidBrush(fill))
+                            {
+                                g.FillPath(brush, path);
+                            }
+                            using (var pen = new Pen(Color.FromArgb(40, 255, 255, 255), 1))
+                            {
+                                g.DrawPath(pen, path);
+                            }
+                        }
+
+                        // Draw window title directly (fixes black border transparency bug)
+                        using (var font = new Font("Segoe UI Semibold", 11f, FontStyle.Bold))
+                        using (var brush = new SolidBrush(Color.White))
+                        {
+                            string displayTitle = titleStr;
+                            if (displayTitle.Length > 28)
+                            {
+                                displayTitle = displayTitle.Substring(0, 25) + "...";
+                            }
+                            var textRect = new RectangleF(15, 12, panel.Width - 30, 24);
+                            g.DrawString(displayTitle, font, brush, textRect);
+                        }
+                    };
+
+                    Action clickAction = () =>
+                    {
+                        _mainForm.FocusWindow(hwnd);
+                        this.Close();
+                    };
+
+                    panel.Click += (s, e) => clickAction();
+
+                    this.Controls.Add(panel);
+
+                    this.HandleCreated += (s, e) =>
+                    {
+                        var rectDest = new Form1.RECT
+                        {
+                            Left = panel.Left + 15,
+                            Top = panel.Top + 45,
+                            Right = panel.Left + itemWidth - 15,
+                            Bottom = panel.Top + itemHeight - 15
+                        };
+
+                        if (DwmRegisterThumbnail(this.Handle, hwnd, out IntPtr thumb) == 0)
+                        {
+                            var props = new DWM_THUMBNAIL_PROPERTIES
+                            {
+                                dwFlags = DWM_TNP_RECTDESTINATION | DWM_TNP_VISIBLE | DWM_TNP_OPACITY | DWM_TNP_SOURCECLIENTAREAONLY,
+                                rcDestination = rectDest,
+                                opacity = 255,
+                                fVisible = true,
+                                fSourceClientAreaOnly = false
+                            };
+                            DwmUpdateThumbnailProperties(thumb, ref props);
+                            _thumbnails.Add(thumb);
+                        }
+                    };
+                }
+
+                this.FormClosing += (s, e) =>
+                {
+                    foreach (var thumb in _thumbnails)
+                    {
+                        DwmUnregisterThumbnail(thumb);
+                    }
+                };
+            }
+
+            private void EnableBlur()
+            {
+                var accent = new Form1.AccentPolicy
+                {
+                    AccentState = Form1.AccentState.ACCENT_ENABLE_ACRYLICBLURBEHIND,
+                    GradientColor = (0 << 24) | (0x151515 & 0xFFFFFF)
+                };
+                int accentStructSize = Marshal.SizeOf(accent);
+                IntPtr accentPtr = Marshal.AllocHGlobal(accentStructSize);
+                Marshal.StructureToPtr(accent, accentPtr, false);
+
+                var data = new Form1.WindowCompositionAttributeData
+                {
+                    Attribute = Form1.WindowCompositionAttribute.WCA_ACCENT_POLICY,
+                    Data = accentPtr,
+                    SizeOfData = accentStructSize
+                };
+                SetWindowCompositionAttribute(this.Handle, ref data);
+                Marshal.FreeHGlobal(accentPtr);
+            }
         }
     }
 
@@ -5221,4 +5670,295 @@ namespace OpenDock
         }
     }
 
+    public class CubeTransitionForm : Form
+    {
+        private readonly Bitmap _bmpA;
+        private readonly Bitmap? _bmpB; 
+        private Bitmap _bmpNextCard;    
+        private Bitmap _bmpPrevCard;    
+        private bool _isRightB = true; 
+        private readonly Form1 _mainForm;
+        
+        private float _angle = 0f;
+        private bool _isDragging = false;
+        private Point _dragStartMouse;
+        private float _dragStartAngle;
+        
+        private System.Windows.Forms.Timer? _animTimer;
+        private float _targetAngle = 0f;
+        private bool _animating = false;
+        private Action? _onAnimComplete;
+
+        public CubeTransitionForm(Bitmap bmpA, Bitmap? bmpB, bool right, Form1 mainForm)
+        {
+            _bmpA = bmpA;
+            _bmpB = bmpB;
+            _mainForm = mainForm;
+
+            this.DoubleBuffered = true;
+            this.FormBorderStyle = FormBorderStyle.None;
+            this.ShowInTaskbar = false;
+            this.TopMost = true;
+            this.WindowState = FormWindowState.Maximized;
+            this.BackColor = Color.Black;
+
+            _bmpNextCard = CreateWorkspaceCard(true);
+            _bmpPrevCard = CreateWorkspaceCard(false);
+
+            this.MouseDown += CubeTransitionForm_MouseDown;
+            this.MouseMove += CubeTransitionForm_MouseMove;
+            this.MouseUp += CubeTransitionForm_MouseUp;
+            this.KeyDown += CubeTransitionForm_KeyDown;
+        }
+
+        private Bitmap CreateWorkspaceCard(bool next)
+        {
+            var bmp = new Bitmap(640, 360, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+                using (var brush = new System.Drawing.Drawing2D.LinearGradientBrush(new Rectangle(0, 0, 640, 360), 
+                    Color.FromArgb(235, 12, 16, 35), Color.FromArgb(235, 25, 12, 50), 45f))
+                {
+                    g.FillRectangle(brush, 0, 0, 640, 360);
+                }
+
+                Color neonColor = next ? Color.FromArgb(180, 0, 255, 200) : Color.FromArgb(180, 255, 0, 150);
+                using (var pen = new Pen(neonColor, 4f))
+                {
+                    g.DrawRectangle(pen, 2, 2, 636, 356);
+                }
+
+                using (var pen = new Pen(Color.FromArgb(200, 255, 255, 255), 4f))
+                {
+                    g.DrawRectangle(pen, 220, 90, 200, 120);
+                    g.DrawLine(pen, 300, 210, 300, 230);
+                    g.DrawLine(pen, 340, 210, 340, 230);
+                    g.DrawLine(pen, 270, 230, 370, 230);
+                }
+
+                using (var font = new Font("Segoe UI Semibold", 20f, FontStyle.Bold))
+                using (var brush = new SolidBrush(Color.FromArgb(240, 255, 255, 255)))
+                {
+                    string text = next ? "Sonraki Çalışma Alanı" : "Önceki Çalışma Alanı";
+                    SizeF size = g.MeasureString(text, font);
+                    g.DrawString(text, font, brush, (640 - size.Width) / 2f, 255);
+                }
+            }
+            return bmp;
+        }
+
+        public void Start()
+        {
+            this.Invalidate();
+        }
+
+        private void CubeTransitionForm_KeyDown(object? sender, KeyEventArgs e)
+        {
+            if (e.KeyCode == Keys.Escape)
+            {
+                this.Close();
+            }
+        }
+
+        private void CubeTransitionForm_MouseDown(object? sender, MouseEventArgs e)
+        {
+            if (_animating) return;
+
+            if (e.Button == MouseButtons.Right)
+            {
+                _isDragging = true;
+                _dragStartMouse = e.Location;
+                _dragStartAngle = _angle;
+            }
+        }
+
+        private void CubeTransitionForm_MouseMove(object? sender, MouseEventArgs e)
+        {
+            if (!_isDragging) return;
+
+            int deltaX = e.X - _dragStartMouse.X;
+            float angleDelta = (deltaX / (float)this.Width) * 180f;
+            _angle = _dragStartAngle + angleDelta;
+
+            if (_angle > 90f) _angle = 90f;
+            if (_angle < -90f) _angle = -90f;
+
+            _isRightB = (_angle < 0f);
+
+            this.Invalidate();
+        }
+
+        private void CubeTransitionForm_MouseUp(object? sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Right)
+            {
+                _isDragging = false;
+            }
+            else if (e.Button == MouseButtons.Left)
+            {
+                if (_animating) return;
+
+                if (_angle < -15f && _isRightB)
+                {
+                    AnimateTo(-90f, () =>
+                    {
+                        _mainForm.SwitchDesktopOS(true);
+                        this.Close();
+                    });
+                }
+                else if (_angle > 15f && !_isRightB)
+                {
+                    AnimateTo(90f, () =>
+                    {
+                        _mainForm.SwitchDesktopOS(false);
+                        this.Close();
+                    });
+                }
+                else
+                {
+                    AnimateTo(0f, () =>
+                    {
+                        this.Close();
+                    });
+                }
+            }
+        }
+
+        private void AnimateTo(float targetAngle, Action onComplete)
+        {
+            _animating = true;
+            _targetAngle = targetAngle;
+            _onAnimComplete = onComplete;
+
+            _animTimer = new System.Windows.Forms.Timer { Interval = 15 };
+            _animTimer.Tick += (s, e) =>
+            {
+                float step = 4f;
+                if (_angle < _targetAngle)
+                {
+                    _angle += step;
+                    if (_angle >= _targetAngle) _angle = _targetAngle;
+                }
+                else
+                {
+                    _angle -= step;
+                    if (_angle <= _targetAngle) _angle = _targetAngle;
+                }
+
+                this.Invalidate();
+
+                if (_angle == _targetAngle)
+                {
+                    _animTimer.Stop();
+                    _animTimer.Dispose();
+                    _animating = false;
+                    _onAnimComplete?.Invoke();
+                }
+            };
+            _animTimer.Start();
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+
+            using (var brush = new System.Drawing.Drawing2D.LinearGradientBrush(this.ClientRectangle, Color.FromArgb(10, 10, 22), Color.FromArgb(20, 15, 30), 45f))
+            {
+                g.FillRectangle(brush, this.ClientRectangle);
+            }
+
+            using (var starBrush = new SolidBrush(Color.FromArgb(180, 255, 255, 255)))
+            {
+                g.FillEllipse(starBrush, this.Width * 0.2f, this.Height * 0.3f, 2, 2);
+                g.FillEllipse(starBrush, this.Width * 0.8f, this.Height * 0.2f, 3, 3);
+                g.FillEllipse(starBrush, this.Width * 0.15f, this.Height * 0.7f, 2, 2);
+                g.FillEllipse(starBrush, this.Width * 0.75f, this.Height * 0.8f, 2, 2);
+            }
+
+            using (var font = new Font("Segoe UI Semibold", 13f, FontStyle.Bold))
+            using (var brush = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
+            {
+                string text = "Masaüstünü döndürmek için SAĞ TIK ile sürükleyin • Seçmek için SOL TIK • İptal için ESC";
+                SizeF sizeText = g.MeasureString(text, font);
+                g.DrawString(text, font, brush, (this.Width - sizeText.Width) / 2f, 40);
+            }
+
+            RectangleF rect = this.ClientRectangle;
+
+            float angleA = _angle;
+            float angleB = _isRightB ? (90f + _angle) : (-90f + _angle);
+
+            DrawPerspectiveImage(g, _bmpA, rect, angleA);
+
+            Bitmap targetB = (_bmpB != null) ? _bmpB : (_isRightB ? _bmpNextCard : _bmpPrevCard);
+            DrawPerspectiveImage(g, targetB, rect, angleB);
+        }
+
+        private void DrawPerspectiveImage(Graphics g, Bitmap bmp, RectangleF destRect, float rotationAngle)
+        {
+            int slices = 50;
+            float sliceWidth = bmp.Width / (float)slices;
+            float destWidth = destRect.Width * 0.65f;
+            float destHeight = destRect.Height * 0.65f;
+            float centerX = destRect.Width / 2f;
+            float centerY = destRect.Height / 2f;
+
+            float AR = destWidth / destHeight;
+
+            float rad = rotationAngle * (float)Math.PI / 180f;
+            float cos = (float)Math.Cos(rad);
+            float sin = (float)Math.Sin(rad);
+
+            for (int i = 0; i < slices; i++)
+            {
+                float srcX = i * sliceWidth;
+                var srcRect = new RectangleF(srcX, 0, sliceWidth + 0.5f, bmp.Height);
+
+                float normX = (i / (float)slices) * 2f - 1f;
+
+                float rx = AR * (normX * cos + sin);
+                float rz = AR * (-normX * sin + cos);
+
+                float cameraZ = -2.5f * AR; 
+                float dist = rz - cameraZ;
+                if (dist <= 0) continue;
+
+                float scale = (1.8f * AR) / dist;
+
+                float screenX = centerX + rx * (destHeight / 2) * scale;
+                float sliceHeight = destHeight * scale;
+                float screenY = centerY - sliceHeight / 2;
+
+                float nextNormX = ((i + 1) / (float)slices) * 2f - 1f;
+                float nextRx = AR * (nextNormX * cos + sin);
+                float nextRz = AR * (-nextNormX * sin + cos);
+                float nextDist = nextRz - cameraZ;
+                float nextScale = (1.8f * AR) / nextDist;
+                float nextScreenX = centerX + nextRx * (destHeight / 2) * nextScale;
+
+                float screenWidth = nextScreenX - screenX;
+                if (screenWidth <= 0) continue;
+
+                g.DrawImage(bmp, new RectangleF(screenX, screenY, screenWidth + 0.5f, sliceHeight), srcRect, GraphicsUnit.Pixel);
+            }
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                _bmpA?.Dispose();
+                _bmpB?.Dispose();
+                _bmpNextCard?.Dispose();
+                _bmpPrevCard?.Dispose();
+                _animTimer?.Dispose();
+            }
+            base.Dispose(disposing);
+        }
+    }
 }
