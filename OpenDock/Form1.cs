@@ -1,7 +1,9 @@
 using System;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
+using System.Linq;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows.Forms;
@@ -17,6 +19,7 @@ namespace OpenDock
         public string MenuLogoPath { get; set; } = "";
         public string DockPosition { get; set; } = "Bottom";
         public bool GameModeEnabled { get; set; } = false;
+        public bool ShowClock { get; set; } = true;
     }
 
     public partial class Form1 : Form
@@ -966,9 +969,8 @@ namespace OpenDock
             _autoRefreshTimer.Tick += (s, e) => CheckForWindowChanges();
             _autoRefreshTimer.Start();
 
-            // Initialize and show clock
-            _clockForm = new ClockForm();
-            _clockForm.Show();
+            // Initialize and show clock if setting is enabled
+            UpdateClockVisibility();
 
             // Initialize Right-Click context menu for the dock background
             _dockBgContextMenu = new ContextMenuStrip
@@ -1140,14 +1142,14 @@ namespace OpenDock
                     }
 
                     // Clean up common application names for clean Dock presentation
-                    if (displayName.Contains("Visual Studio", StringComparison.OrdinalIgnoreCase))
+                    if (displayName.IndexOf("Visual Studio", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        if (displayName.Contains("Code", StringComparison.OrdinalIgnoreCase))
+                        if (displayName.IndexOf("Code", StringComparison.OrdinalIgnoreCase) >= 0)
                             displayName = "VS Code";
                         else
                             displayName = "Visual Studio 2022";
                     }
-                    else if (displayName.Contains("Windows Terminal", StringComparison.OrdinalIgnoreCase) || 
+                    else if (displayName.IndexOf("Windows Terminal", StringComparison.OrdinalIgnoreCase) >= 0 || 
                              procName.Equals("WindowsTerminal", StringComparison.OrdinalIgnoreCase))
                     {
                         displayName = "Terminal";
@@ -2211,6 +2213,19 @@ namespace OpenDock
             positionMenu.DropDownItems.Add("Sol (Dikey)", null, (s, e) => ChangeDockPosition("Left"));
             positionMenu.DropDownItems.Add("Sağ (Dikey)", null, (s, e) => ChangeDockPosition("Right"));
             appearanceMenu.DropDownItems.Add(positionMenu);
+            appearanceMenu.DropDownItems.Add("-");
+            var showClockMenuItem = new ToolStripMenuItem("Saati Göster")
+            {
+                CheckOnClick = true,
+                Checked = CurrentSettings.ShowClock
+            };
+            showClockMenuItem.CheckedChanged += (s, e) =>
+            {
+                CurrentSettings.ShowClock = showClockMenuItem.Checked;
+                SaveSettings();
+                UpdateClockVisibility();
+            };
+            appearanceMenu.DropDownItems.Add(showClockMenuItem);
 
             contextMenu.Items.Add(appearanceMenu);
 
@@ -2247,7 +2262,7 @@ namespace OpenDock
             _trayIcon.Visible = true;
         }
 
-        private sealed class ModernTrayMenuRenderer : ToolStripProfessionalRenderer
+        internal sealed class ModernTrayMenuRenderer : ToolStripProfessionalRenderer
         {
             public ModernTrayMenuRenderer()
                 : base(new ModernTrayColorTable())
@@ -2390,6 +2405,7 @@ namespace OpenDock
                 {
                     item.Owner.Show(this);
                 }
+                UpdateClockVisibility();
             }
             else
             {
@@ -2399,6 +2415,29 @@ namespace OpenDock
                 }
                 this.Hide();
                 _startMenu?.Close();
+                if (_clockForm != null && !_clockForm.IsDisposed)
+                {
+                    _clockForm.Hide();
+                }
+            }
+        }
+
+        private void UpdateClockVisibility()
+        {
+            if (CurrentSettings.ShowClock)
+            {
+                if (_clockForm == null || _clockForm.IsDisposed)
+                {
+                    _clockForm = new ClockForm();
+                }
+                _clockForm.Show();
+            }
+            else
+            {
+                if (_clockForm != null && !_clockForm.IsDisposed)
+                {
+                    _clockForm.Hide();
+                }
             }
         }
 
@@ -2488,8 +2527,9 @@ namespace OpenDock
             _startMenu.FormClosed += (s, e) => _startMenu = null;
             _startMenu.StartPosition = FormStartPosition.Manual;
             
+            var installedApps = StartMenuForm.GetInstalledAppsSnapshot();
             string pos = CurrentSettings.DockPosition ?? "Bottom";
-            int w = 350;
+            int w = 410;
             int h = 450;
             int x, y;
 
@@ -2566,7 +2606,7 @@ namespace OpenDock
             public int SizeOfData;
         }
 
-        private struct InstalledApp
+        internal struct InstalledApp
         {
             public string Name;
             public string ExePath;
@@ -2588,6 +2628,10 @@ namespace OpenDock
         private const int OpenAnimationFrames = 10;
         private const int CloseAnimationFrames = 8;
         private const int OpenAnimationOffsetY = 18;
+        private List<InstalledApp> _allApps = new List<InstalledApp>();
+        private FlowLayoutPanel? _flowLayout;
+        private Panel? _scrollThumb;
+        private Panel? _scrollTrack;
 
         private sealed class AppRowControl : Control
         {
@@ -2621,7 +2665,7 @@ namespace OpenDock
             public bool MatchesFilter(string filter)
             {
                 return string.IsNullOrWhiteSpace(filter) ||
-                       _appName.Contains(filter, StringComparison.OrdinalIgnoreCase);
+                       _appName.IndexOf(filter, StringComparison.OrdinalIgnoreCase) >= 0;
             }
 
             protected override void OnMouseEnter(EventArgs e)
@@ -2687,93 +2731,7 @@ namespace OpenDock
             }
         }
 
-        private sealed class RoundedCommandButton : Control
-        {
-            private bool _hovered;
-            private bool _pressed;
 
-            public RoundedCommandButton()
-            {
-                SetStyle(
-                    ControlStyles.UserPaint |
-                    ControlStyles.AllPaintingInWmPaint |
-                    ControlStyles.OptimizedDoubleBuffer |
-                    ControlStyles.ResizeRedraw |
-                    ControlStyles.Selectable,
-                    true);
-
-                BackColor = Color.FromArgb(46, 46, 46);
-                ForeColor = Color.FromArgb(248, 249, 251);
-                Font = new Font("Segoe UI", 9f, FontStyle.Bold, GraphicsUnit.Point);
-                Cursor = Cursors.Hand;
-                TabStop = true;
-            }
-
-            protected override void OnMouseEnter(EventArgs e)
-            {
-                _hovered = true;
-                Invalidate();
-                base.OnMouseEnter(e);
-            }
-
-            protected override void OnMouseLeave(EventArgs e)
-            {
-                _hovered = false;
-                _pressed = false;
-                Invalidate();
-                base.OnMouseLeave(e);
-            }
-
-            protected override void OnMouseDown(MouseEventArgs e)
-            {
-                if (e.Button == MouseButtons.Left)
-                {
-                    _pressed = true;
-                    Invalidate();
-                }
-
-                base.OnMouseDown(e);
-            }
-
-            protected override void OnMouseUp(MouseEventArgs e)
-            {
-                _pressed = false;
-                Invalidate();
-                base.OnMouseUp(e);
-            }
-
-            protected override void OnPaint(PaintEventArgs e)
-            {
-                var g = e.Graphics;
-                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
-
-                Color fillColor = _pressed
-                    ? Color.FromArgb(70, 70, 70)
-                    : _hovered
-                        ? Color.FromArgb(62, 62, 62)
-                        : BackColor;
-
-                var rect = new Rectangle(0, 0, Width - 1, Height - 1);
-                using (var path = RoundedRect(rect, 6))
-                using (var fillBrush = new SolidBrush(fillColor))
-                using (var borderPen = new Pen(Color.FromArgb(110, 255, 255, 255), 1f))
-                {
-                    g.FillPath(fillBrush, path);
-                    g.DrawPath(borderPen, path);
-                }
-
-                using var textBrush = new SolidBrush(ForeColor);
-                using var format = new StringFormat(StringFormat.GenericTypographic)
-                {
-                    Alignment = StringAlignment.Center,
-                    LineAlignment = StringAlignment.Center,
-                    Trimming = StringTrimming.EllipsisCharacter,
-                    FormatFlags = StringFormatFlags.NoWrap
-                };
-                g.DrawString(Text, Font, textBrush, ClientRectangle, format);
-            }
-        }
 
         private sealed class SearchInputControl : Control
         {
@@ -2910,6 +2868,171 @@ namespace OpenDock
             }
         }
 
+        [DllImport("user32.dll")]
+        private static extern bool LockWorkStation();
+
+        private sealed class PowerIconButton : Control
+        {
+            private readonly string _type; // "shutdown", "restart", "sleep", "lock"
+            private bool _hovered;
+            private bool _pressed;
+
+            public PowerIconButton(string type, string toolTipText)
+            {
+                _type = type;
+                SetStyle(
+                    ControlStyles.UserPaint |
+                    ControlStyles.AllPaintingInWmPaint |
+                    ControlStyles.OptimizedDoubleBuffer |
+                    ControlStyles.ResizeRedraw,
+                    true);
+
+                Size = new Size(32, 32);
+                Cursor = Cursors.Hand;
+
+                var toolTip = new ToolTip();
+                toolTip.SetToolTip(this, toolTipText);
+            }
+
+            protected override void OnMouseEnter(EventArgs e)
+            {
+                _hovered = true;
+                Invalidate();
+                base.OnMouseEnter(e);
+            }
+
+            protected override void OnMouseLeave(EventArgs e)
+            {
+                _hovered = false;
+                _pressed = false;
+                Invalidate();
+                base.OnMouseLeave(e);
+            }
+
+            protected override void OnMouseDown(MouseEventArgs e)
+            {
+                if (e.Button == MouseButtons.Left)
+                {
+                    _pressed = true;
+                    Invalidate();
+                }
+                base.OnMouseDown(e);
+            }
+
+            protected override void OnMouseUp(MouseEventArgs e)
+            {
+                _pressed = false;
+                Invalidate();
+                base.OnMouseUp(e);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+                if (_pressed)
+                {
+                    using var brush = new SolidBrush(Color.FromArgb(90, 255, 255, 255));
+                    g.FillEllipse(brush, ClientRectangle);
+                }
+                else if (_hovered)
+                {
+                    using var brush = new SolidBrush(Color.FromArgb(40, 255, 255, 255));
+                    g.FillEllipse(brush, ClientRectangle);
+                }
+
+                using var pen = new Pen(Color.FromArgb(240, 240, 240), 2.5f);
+                pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+
+                int w = Width;
+                int h = Height;
+
+                if (_type == "shutdown")
+                {
+                    g.DrawArc(pen, 7, 7, w - 14, h - 14, -60, 300);
+                    g.DrawLine(pen, w / 2, 4, w / 2, h / 2 - 1);
+                }
+                else if (_type == "restart")
+                {
+                    // Thinner pen for cleaner circular arrow
+                    using var thinPen = new Pen(Color.FromArgb(240, 240, 240), 2.2f);
+                    thinPen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                    thinPen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                    g.DrawArc(thinPen, 8, 8, 16, 16, 45, 270);
+
+                    // Solid sharp triangle arrowhead pointing downwards-right
+                    using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+                    {
+                        path.AddLine(22, 5, 22, 11);
+                        path.AddLine(22, 11, 16, 11);
+                        path.CloseFigure();
+                        using var brush = new SolidBrush(Color.FromArgb(240, 240, 240));
+                        g.FillPath(brush, path);
+                    }
+                }
+                else if (_type == "sleep")
+                {
+                    // Rotate and center graphics to draw a bold horizontal/slanted crescent moon
+                    g.TranslateTransform(16, 16);
+                    g.RotateTransform(35); // Rotate 35 degrees so hollow part faces up-left towards 'Uygulamalar' text
+
+                    using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+                    {
+                        // Outer arc: centered, radius 8
+                        path.AddArc(-8, -8, 16, 16, 270, 180);
+                        // Inner arc: shifted left by 5.5px to make the crescent shape bold and thick
+                        path.AddArc(-13.5f, -8, 16, 16, 90, -180);
+                        path.CloseFigure();
+                        using var brush = new SolidBrush(Color.FromArgb(240, 240, 240));
+                        g.FillPath(brush, path);
+                    }
+
+                    g.ResetTransform();
+                }
+                else if (_type == "lock")
+                {
+                    g.DrawArc(pen, 10, 6, w - 20, h / 2 - 3, 180, 180);
+                    using var bodyBrush = new SolidBrush(Color.FromArgb(240, 240, 240));
+                    g.FillRectangle(bodyBrush, 8, h / 2 - 1, w - 16, h / 2 - 5);
+                }
+                else if (_type == "internet")
+                {
+                    using var wifiPen = new Pen(Color.FromArgb(240, 240, 240), 2f);
+                    wifiPen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                    wifiPen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+
+                    using var dotBrush = new SolidBrush(Color.FromArgb(240, 240, 240));
+                    g.FillEllipse(dotBrush, 15, 23, 2, 2);
+
+                    g.DrawArc(wifiPen, 11, 19, 10, 10, -135, 90);
+                    g.DrawArc(wifiPen, 7, 14, 18, 18, -135, 90);
+                    g.DrawArc(wifiPen, 3, 9, 26, 26, -135, 90);
+                }
+                else if (_type == "volume")
+                {
+                    PointF[] speakerPoints = {
+                        new PointF(6, 12),
+                        new PointF(11, 12),
+                        new PointF(16, 7),
+                        new PointF(16, 25),
+                        new PointF(11, 20),
+                        new PointF(6, 20)
+                    };
+                    using var brush = new SolidBrush(Color.FromArgb(240, 240, 240));
+                    g.FillPolygon(brush, speakerPoints);
+
+                    using var soundPen = new Pen(Color.FromArgb(240, 240, 240), 2f);
+                    soundPen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                    soundPen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+
+                    g.DrawArc(soundPen, 12, 11, 10, 10, -60, 120);
+                    g.DrawArc(soundPen, 9, 7, 18, 18, -60, 120);
+                }
+            }
+        }
+
         public StartMenuForm()
         {
             var configuredMenuColor = Color.FromArgb(Form1.CurrentSettings.MenuColorArgb);
@@ -2923,12 +3046,27 @@ namespace OpenDock
             this.ShowInTaskbar = false;
             this.TopMost = true;
             this.Opacity = 0;
-            this.Deactivate += (s, e) => this.Close();
+            this.Deactivate += (s, e) =>
+            {
+                this.BeginInvoke(new Action(() =>
+                {
+                    if (this.IsDisposed) return;
+                    var active = Form.ActiveForm;
+                    if (active != this && (_controlCenter == null || _controlCenter.IsDisposed || active != _controlCenter))
+                    {
+                        if (_controlCenter != null && !_controlCenter.IsDisposed)
+                        {
+                            _controlCenter.Close();
+                        }
+                        this.Close();
+                    }
+                }));
+            };
             this.HandleCreated += (s, e) => EnableBlur();
             this.Activated += (s, e) => EnableBlur();
 
-            // Set soft rounded corners manually using window region clipping (16px radius)
-            this.Region = new Region(RoundedRect(new Rectangle(0, 0, 350, 450), 16));
+            int h = 450;
+            this.Region = new Region(RoundedRect(new Rectangle(0, 0, 410, h), 16));
 
             var contentPanel = new Panel
             {
@@ -2948,6 +3086,12 @@ namespace OpenDock
                     FormatFlags = StringFormatFlags.NoWrap
                 };
                 e.Graphics.DrawString("Uygulamalar", titleFont, titleBrush, new RectangleF(20, 17, 220, 28), titleFormat);
+
+                using (var sepPen = new Pen(Color.FromArgb(30, 255, 255, 255), 1.5f))
+                {
+                    e.Graphics.DrawLine(sepPen, 345, 20, 345, h - 20);
+                    e.Graphics.DrawLine(sepPen, 355, 252, 400, 252);
+                }
             };
             this.Controls.Add(contentPanel);
 
@@ -2965,49 +3109,49 @@ namespace OpenDock
             var flowLayoutContainer = new Panel
             {
                 Width = 300,
-                Height = 275,
+                Height = h - 105 - 25,
                 Location = new Point(20, 105),
                 BackColor = menuColor
             };
             contentPanel.Controls.Add(flowLayoutContainer);
 
             // Pinned Apps flow panel (wider than container to push scrollbar off-screen)
-            var flowLayout = new FlowLayoutPanel
+            _flowLayout = new FlowLayoutPanel
             {
                 Width = 320,
-                Height = 275,
+                Height = h - 105 - 25,
                 Location = new Point(0, 0),
                 BackColor = menuColor,
                 AutoScroll = true
             };
-            flowLayoutContainer.Controls.Add(flowLayout);
+            flowLayoutContainer.Controls.Add(_flowLayout);
 
             // Custom modern rounded scrollbar track
-            var scrollTrack = new Panel
+            _scrollTrack = new Panel
             {
                 Width = 6,
-                Height = 275,
+                Height = h - 105 - 25,
                 Location = new Point(325, 105),
                 BackColor = menuColor
             };
-            contentPanel.Controls.Add(scrollTrack);
+            contentPanel.Controls.Add(_scrollTrack);
 
             // Custom modern rounded scrollbar thumb
-            var scrollThumb = new Panel
+            _scrollThumb = new Panel
             {
                 Width = 6,
                 Height = 40,
                 BackColor = Color.FromArgb(95, 95, 95),
                 Cursor = Cursors.Hand
             };
-            scrollTrack.Controls.Add(scrollThumb);
+            _scrollTrack.Controls.Add(_scrollThumb);
 
             // Bind scroll events to update custom scrollbar
-            flowLayout.Scroll += (s, e) => UpdateThumb(flowLayout, scrollThumb, scrollTrack.Height);
-            flowLayout.MouseWheel += (s, e) => {
+            _flowLayout.Scroll += (s, e) => UpdateThumb(_flowLayout, _scrollThumb, _scrollTrack.Height);
+            _flowLayout.MouseWheel += (s, e) => {
                 System.Windows.Forms.Timer wheelTimer = new System.Windows.Forms.Timer { Interval = 10 };
                 wheelTimer.Tick += (st, et) => {
-                    UpdateThumb(flowLayout, scrollThumb, scrollTrack.Height);
+                    UpdateThumb(_flowLayout, _scrollThumb, _scrollTrack.Height);
                     wheelTimer.Stop();
                     wheelTimer.Dispose();
                 };
@@ -3018,53 +3162,210 @@ namespace OpenDock
             int dragStartY = 0;
             int dragStartScroll = 0;
 
-            scrollThumb.MouseDown += (s, e) => {
+            _scrollThumb.MouseDown += (s, e) => {
                 if (e.Button == MouseButtons.Left)
                 {
                     isDragging = true;
                     dragStartY = Cursor.Position.Y;
-                    dragStartScroll = flowLayout.VerticalScroll.Value;
+                    dragStartScroll = _flowLayout.VerticalScroll.Value;
                 }
             };
 
-            scrollThumb.MouseMove += (s, e) => {
+            _scrollThumb.MouseMove += (s, e) => {
                 if (isDragging)
                 {
                     int deltaY = Cursor.Position.Y - dragStartY;
-                    int maxScroll = flowLayout.VerticalScroll.Maximum - flowLayout.ClientRectangle.Height;
-                    int maxThumbTravel = scrollTrack.Height - scrollThumb.Height;
+                    int maxScroll = _flowLayout.VerticalScroll.Maximum - _flowLayout.ClientRectangle.Height;
+                    int maxThumbTravel = _scrollTrack.Height - _scrollThumb.Height;
                     if (maxThumbTravel > 0)
                     {
                         float scrollDeltaPercent = (float)deltaY / maxThumbTravel;
                         int newScroll = dragStartScroll + (int)(scrollDeltaPercent * maxScroll);
                         newScroll = Math.Max(0, Math.Min(maxScroll, newScroll));
-                        flowLayout.AutoScrollPosition = new Point(0, newScroll);
-                        UpdateThumb(flowLayout, scrollThumb, scrollTrack.Height);
+                        _flowLayout.AutoScrollPosition = new Point(0, newScroll);
+                        UpdateThumb(_flowLayout, _scrollThumb, _scrollTrack.Height);
                     }
                 }
             };
 
-            scrollThumb.MouseUp += (s, e) => {
+            _scrollThumb.MouseUp += (s, e) => {
                 isDragging = false;
             };
 
-            // Fetch installed apps from registry
-            var installedApps = GetInstalledAppsSnapshot();
-            WarmInstalledAppsCacheAsync();
+            // Initialize with default apps instantly (0ms UI lag)
+            var defaultApps = new List<InstalledApp>();
+            AddDefaultInstalledApps(defaultApps);
+            _allApps = defaultApps;
+            PopulateAppListControls();
 
-            flowLayout.SuspendLayout();
+            // Load full list asynchronously on background thread to keep UI completely responsive
+            System.Threading.Tasks.Task.Run(() =>
+            {
+                var apps = GetInstalledApps(forceRefresh: true);
+                this.BeginInvoke(new Action(() =>
+                {
+                    if (this.IsDisposed) return;
+                    _allApps = apps;
+                    PopulateAppListControls();
+                }));
+            });
+
+            // Search filtering logic (runs in 0ms by toggling visibility of loaded controls)
+            searchBox.SearchTextChanged += (s, e) => {
+                string filter = searchBox.SearchText;
+
+                if (_flowLayout == null || _scrollThumb == null || _scrollTrack == null) return;
+
+                _flowLayout.SuspendLayout();
+                try
+                {
+                    foreach (Control ctrl in _flowLayout.Controls)
+                    {
+                        if (ctrl is AppRowControl row)
+                        {
+                            row.Visible = row.MatchesFilter(filter);
+                        }
+                    }
+                }
+                finally
+                {
+                    _flowLayout.ResumeLayout();
+                }
+
+                BeginInvoke(new Action(() => UpdateThumb(_flowLayout, _scrollThumb, _scrollTrack.Height)));
+            };
+
+            // 4 Power & Session buttons vertically stacked on the right sidebar
+            var shutdownBtn = new PowerIconButton("shutdown", "Kapat")
+            {
+                Location = new Point(362, 58)
+            };
+            shutdownBtn.Click += (s, e) =>
+            {
+                if (MessageBox.Show("Bilgisayarı kapatmak istiyor musunuz?", "Sistem", MessageBoxButtons.YesNo) == DialogResult.Yes)
+                {
+                    Process.Start("shutdown", "/s /t 0");
+                }
+            };
+            contentPanel.Controls.Add(shutdownBtn);
+
+            var restartBtn = new PowerIconButton("restart", "Yeniden Başlat")
+            {
+                Location = new Point(362, 108)
+            };
+            restartBtn.Click += (s, e) =>
+            {
+                if (MessageBox.Show("Bilgisayarı yeniden başlatmak istiyor musunuz?", "Sistem", MessageBoxButtons.YesNo) == DialogResult.Yes)
+                {
+                    Process.Start("shutdown", "/r /t 0");
+                }
+            };
+            contentPanel.Controls.Add(restartBtn);
+
+            var sleepBtn = new PowerIconButton("sleep", "Uyku")
+            {
+                Location = new Point(362, 158)
+            };
+            sleepBtn.Click += (s, e) =>
+            {
+                Application.SetSuspendState(PowerState.Suspend, false, false);
+            };
+            contentPanel.Controls.Add(sleepBtn);
+
+            var lockBtn = new PowerIconButton("lock", "Kilitle")
+            {
+                Location = new Point(362, 208)
+            };
+            lockBtn.Click += (s, e) =>
+            {
+                LockWorkStation();
+            };
+            contentPanel.Controls.Add(lockBtn);
+
+            var quickSettingsBtn = new QuickSettingsPillButton()
+            {
+                Location = new Point(354, 267)
+            };
+            quickSettingsBtn.Click += (s, e) =>
+            {
+                ToggleControlCenter(quickSettingsBtn.PointToScreen(new Point(0, 0)));
+            };
+            contentPanel.Controls.Add(quickSettingsBtn);
+
+            contentPanel.BringToFront();
+            searchBox.BringToFront();
+            flowLayoutContainer.BringToFront();
+            _scrollTrack.BringToFront();
+            shutdownBtn.BringToFront();
+            restartBtn.BringToFront();
+            sleepBtn.BringToFront();
+            lockBtn.BringToFront();
+            quickSettingsBtn.BringToFront();
+
+            Shown += (s, e) =>
+            {
+                StartOpenAnimation();
+                UpdateThumb(_flowLayout, _scrollThumb, _scrollTrack.Height);
+                searchBox.Focus();
+            };
+        }
+
+        private ControlCenterForm? _controlCenter;
+        private DateTime _lastControlCenterCloseTime = DateTime.MinValue;
+        private void ToggleControlCenter(Point buttonScreenLoc)
+        {
+            if (DateTime.UtcNow - _lastControlCenterCloseTime < TimeSpan.FromMilliseconds(250))
+            {
+                return;
+            }
+
+            if (_controlCenter != null && !_controlCenter.IsDisposed)
+            {
+                _controlCenter.Close();
+                return;
+            }
+
+            _controlCenter = new ControlCenterForm(this);
+            _controlCenter.FormClosed += (s, e) =>
+            {
+                _controlCenter = null;
+                _lastControlCenterCloseTime = DateTime.UtcNow;
+            };
+            _controlCenter.StartPosition = FormStartPosition.Manual;
+
+            int x = this.Location.X - 330;
+            int y = this.Location.Y + (this.Height - 400); // 400 height matches ControlCenterForm
+
+            Rectangle bounds = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
+            if (x < bounds.Left)
+            {
+                x = this.Location.X + this.Width + 10;
+            }
+            if (y < bounds.Top) y = bounds.Top + 10;
+            if (y + 400 > bounds.Bottom) y = bounds.Bottom - 400 - 10;
+
+            _controlCenter.Location = new Point(x, y);
+            _controlCenter.Show();
+        }
+
+        private void PopulateAppListControls()
+        {
+            if (_flowLayout == null || _scrollThumb == null || _scrollTrack == null) return;
+
+            _flowLayout.SuspendLayout();
             try
             {
-                foreach (var app in installedApps)
+                _flowLayout.Controls.Clear();
+                foreach (var app in _allApps)
                 {
                     Bitmap? iconBmp = null;
                     try
                     {
-                        iconBmp = new Bitmap(app.AppIcon.ToBitmap(), new Size(24, 24));
+                        iconBmp = new Bitmap(app.AppIcon.ToBitmap(), 24, 24);
                     }
                     catch
                     {
-                        iconBmp = new Bitmap(Form1.GetGenericApplicationIcon().ToBitmap(), new Size(24, 24));
+                        iconBmp = new Bitmap(Form1.GetGenericApplicationIcon().ToBitmap(), 24, 24);
                     }
 
                     var row = new AppRowControl(app.Name, app.ExePath, iconBmp);
@@ -3081,88 +3382,14 @@ namespace OpenDock
 
                         this.Close();
                     };
-                    flowLayout.Controls.Add(row);
+                    _flowLayout.Controls.Add(row);
                 }
             }
             finally
             {
-                flowLayout.ResumeLayout();
+                _flowLayout.ResumeLayout();
             }
-            UpdateThumb(flowLayout, scrollThumb, scrollTrack.Height);
-
-            // Search filtering logic
-            searchBox.SearchTextChanged += (s, e) => {
-                string filter = searchBox.SearchText;
-
-                flowLayout.SuspendLayout();
-                try
-                {
-                    foreach (Control ctrl in flowLayout.Controls)
-                    {
-                        if (ctrl is AppRowControl row)
-                        {
-                            row.Visible = row.MatchesFilter(filter);
-                        }
-                    }
-                }
-                finally
-                {
-                    flowLayout.ResumeLayout();
-                }
-
-                BeginInvoke(new Action(() => UpdateThumb(flowLayout, scrollThumb, scrollTrack.Height)));
-            };
-
-            // Power control buttons at the bottom
-            var powerBtn = new RoundedCommandButton
-            {
-                Text = "Kapat",
-                Width = 80,
-                Height = 30,
-                Location = new Point(250, 400),
-                ForeColor = Color.FromArgb(248, 249, 251),
-                BackColor = Color.FromArgb(50, 50, 50),
-                Font = new Font("Segoe UI", 9f, FontStyle.Bold)
-            };
-            powerBtn.Click += (s, e) => {
-                if (MessageBox.Show("Bilgisayarı kapatmak istiyor musunuz?", "Sistem", MessageBoxButtons.YesNo) == DialogResult.Yes)
-                {
-                    Process.Start("shutdown", "/s /t 0");
-                }
-            };
-            contentPanel.Controls.Add(powerBtn);
-
-            var restartBtn = new RoundedCommandButton
-            {
-                Text = "Yeniden Başlat",
-                Width = 110,
-                Height = 30,
-                Location = new Point(130, 400),
-                ForeColor = Color.FromArgb(248, 249, 251),
-                BackColor = Color.FromArgb(50, 50, 50),
-                Font = new Font("Segoe UI", 9f, FontStyle.Bold)
-            };
-            restartBtn.Click += (s, e) => {
-                if (MessageBox.Show("Bilgisayarı yeniden başlatmak istiyor musunuz?", "Sistem", MessageBoxButtons.YesNo) == DialogResult.Yes)
-                {
-                    Process.Start("shutdown", "/r /t 0");
-                }
-            };
-            contentPanel.Controls.Add(restartBtn);
-
-            contentPanel.BringToFront();
-            searchBox.BringToFront();
-            flowLayoutContainer.BringToFront();
-            scrollTrack.BringToFront();
-            powerBtn.BringToFront();
-            restartBtn.BringToFront();
-
-            Shown += (s, e) =>
-            {
-                StartOpenAnimation();
-                UpdateThumb(flowLayout, scrollThumb, scrollTrack.Height);
-                searchBox.Focus();
-            };
+            UpdateThumb(_flowLayout, _scrollThumb, _scrollTrack.Height);
         }
 
         private void StartOpenAnimation()
@@ -3333,19 +3560,66 @@ namespace OpenDock
             return Form1.GetGenericApplicationIcon();
         }
 
-        private static List<InstalledApp> GetInstalledAppsSnapshot()
+        internal static List<InstalledApp> GetInstalledAppsSnapshot()
         {
-            lock (InstalledAppsCacheLock)
+            return GetInstalledApps(forceRefresh: false);
+        }
+
+        internal static bool IsEthernetActive()
+        {
+            try
             {
-                if (_installedAppsCache != null && DateTime.UtcNow - _installedAppsCacheTime < InstalledAppsCacheDuration)
+                foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
                 {
-                    return _installedAppsCache;
+                    if (ni.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up &&
+                        ni.NetworkInterfaceType != System.Net.NetworkInformation.NetworkInterfaceType.Loopback &&
+                        ni.NetworkInterfaceType != System.Net.NetworkInformation.NetworkInterfaceType.Tunnel)
+                    {
+                        if (ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Ethernet ||
+                            ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.GigabitEthernet)
+                        {
+                            return true;
+                        }
+                    }
                 }
             }
+            catch { }
+            return false;
+        }
 
-            var list = new List<InstalledApp>();
-            AddDefaultInstalledApps(list);
-            return list;
+        internal static bool IsWifiActive()
+        {
+            try
+            {
+                foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up &&
+                        ni.NetworkInterfaceType == System.Net.NetworkInformation.NetworkInterfaceType.Wireless80211)
+                    {
+                        return true;
+                    }
+                }
+            }
+            catch { }
+            return false;
+        }
+
+        internal static string GetActiveNetworkName()
+        {
+            try
+            {
+                foreach (var ni in System.Net.NetworkInformation.NetworkInterface.GetAllNetworkInterfaces())
+                {
+                    if (ni.OperationalStatus == System.Net.NetworkInformation.OperationalStatus.Up &&
+                        ni.NetworkInterfaceType != System.Net.NetworkInformation.NetworkInterfaceType.Loopback &&
+                        ni.NetworkInterfaceType != System.Net.NetworkInformation.NetworkInterfaceType.Tunnel)
+                    {
+                        return ni.Name;
+                    }
+                }
+            }
+            catch { }
+            return "Baglanti Yok";
         }
 
         public static void WarmInstalledAppsCacheAsync()
@@ -3448,7 +3722,7 @@ namespace OpenDock
                                         };
                                         foreach (var word in blacklist)
                                         {
-                                            if (displayName.Contains(word, StringComparison.OrdinalIgnoreCase))
+                                            if (displayName.IndexOf(word, StringComparison.OrdinalIgnoreCase) >= 0)
                                             {
                                                 isBlacklisted = true;
                                                 break;
@@ -3495,8 +3769,8 @@ namespace OpenDock
                                                         foreach (var file in files)
                                                         {
                                                             string nameWithoutExt = System.IO.Path.GetFileNameWithoutExtension(file);
-                                                            if (displayName.Contains(nameWithoutExt, StringComparison.OrdinalIgnoreCase) ||
-                                                                nameWithoutExt.Contains(displayName, StringComparison.OrdinalIgnoreCase))
+                                                            if (displayName.IndexOf(nameWithoutExt, StringComparison.OrdinalIgnoreCase) >= 0 ||
+                                                                nameWithoutExt.IndexOf(displayName, StringComparison.OrdinalIgnoreCase) >= 0)
                                                             {
                                                                 bestMatch = file;
                                                                 break;
@@ -3602,7 +3876,7 @@ namespace OpenDock
                             bool isBlacklisted = false;
                             foreach (var word in linkBlacklist)
                             {
-                                if (displayName.Contains(word, StringComparison.OrdinalIgnoreCase))
+                                if (displayName.IndexOf(word, StringComparison.OrdinalIgnoreCase) >= 0)
                                 {
                                     isBlacklisted = true;
                                     break;
@@ -3817,4 +4091,1134 @@ namespace OpenDock
             }
         }
     }
+
+    [ComImport]
+    [Guid("BCDE0395-E52F-467C-8E3D-C4579291692E")]
+    internal class MMDeviceEnumerator
+    {
+    }
+
+    [Guid("A95664D2-9614-4F35-A746-DE8DB63617E6")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IMMDeviceEnumerator
+    {
+        int EnumAudioEndpoints(int dataFlow, int stateMask, out IntPtr deviceCollection);
+        int GetDefaultAudioEndpoint(int dataFlow, int role, [MarshalAs(UnmanagedType.IUnknown)] out object device);
+    }
+
+    [Guid("D666063F-1587-4E43-81F1-B948E807363F")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IMMDevice
+    {
+        int Activate(ref Guid iid, int dwClsCtx, IntPtr pActivationParams, [MarshalAs(UnmanagedType.IUnknown)] out object ppInterface);
+        int OpenPropertyStore(int stgmAccess, [MarshalAs(UnmanagedType.IUnknown)] out object properties);
+        int GetId([MarshalAs(UnmanagedType.LPWStr)] out string id);
+        int GetState(out int state);
+    }
+
+    // IAudioEndpointVolume - vtable must match Windows SDK EXACTLY
+    [Guid("5CDF2C82-841E-4546-9722-0CF74078229A")]
+    [InterfaceType(ComInterfaceType.InterfaceIsIUnknown)]
+    internal interface IAudioEndpointVolume
+    {
+        int RegisterControlChangeNotify(IntPtr client);
+        int UnregisterControlChangeNotify(IntPtr client);
+        int GetChannelCount(out uint channelCount);
+        int SetMasterVolumeLevel(float levelDB, ref Guid eventContext);
+        int SetMasterVolumeLevelScalar(float level, ref Guid eventContext);
+        int GetMasterVolumeLevel(out float levelDB);
+        int GetMasterVolumeLevelScalar(out float level);
+        int SetChannelVolumeLevel(uint channel, float levelDB, ref Guid eventContext);
+        int SetChannelVolumeLevelScalar(uint channel, float level, ref Guid eventContext);
+        int GetChannelVolumeLevel(uint channel, out float levelDB);
+        int GetChannelVolumeLevelScalar(uint channel, out float level);
+        int SetMute([MarshalAs(UnmanagedType.Bool)] bool mute, ref Guid eventContext);
+        int GetMute([MarshalAs(UnmanagedType.Bool)] out bool mute);
+        int GetVolumeStepInfo(out uint step, out uint stepCount);
+        int VolumeStepUp(ref Guid eventContext);
+        int VolumeStepDown(ref Guid eventContext);
+        int QueryHardwareSupport(out uint hardwareSupportMask);
+        int GetVolumeRange(out float minDB, out float maxDB, out float incrementDB);
+    }
+
+    // ── Night Light Helper (Gamma Ramp) ─────────────────────────────
+    internal static class NightLightHelper
+    {
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetDC(IntPtr hWnd);
+
+        [DllImport("user32.dll")]
+        private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool SetDeviceGammaRamp(IntPtr hDC, ushort[] ramp);
+
+        [DllImport("gdi32.dll")]
+        private static extern bool GetDeviceGammaRamp(IntPtr hDC, ushort[] ramp);
+
+        private static bool _isEnabled;
+        private static ushort[]? _originalRamp;
+
+        public static bool IsEnabled => _isEnabled;
+
+        public static void Toggle()
+        {
+            if (_isEnabled) Disable(); else Enable();
+        }
+
+        private static void Enable()
+        {
+            IntPtr hdc = GetDC(IntPtr.Zero);
+            try
+            {
+                if (_originalRamp == null)
+                {
+                    _originalRamp = new ushort[3 * 256];
+                    GetDeviceGammaRamp(hdc, _originalRamp);
+                }
+
+                var warm = new ushort[3 * 256];
+                for (int i = 0; i < 256; i++)
+                {
+                    int v = i * 256;
+                    warm[i] = (ushort)Math.Min(65535, v);               // Red 100%
+                    warm[256 + i] = (ushort)Math.Min(65535, v * 83 / 100); // Green 83%
+                    warm[512 + i] = (ushort)Math.Min(65535, v * 62 / 100); // Blue 62%
+                }
+                SetDeviceGammaRamp(hdc, warm);
+                _isEnabled = true;
+            }
+            finally { ReleaseDC(IntPtr.Zero, hdc); }
+        }
+
+        private static void Disable()
+        {
+            IntPtr hdc = GetDC(IntPtr.Zero);
+            try
+            {
+                if (_originalRamp != null)
+                {
+                    SetDeviceGammaRamp(hdc, _originalRamp);
+                }
+                else
+                {
+                    var def = new ushort[3 * 256];
+                    for (int i = 0; i < 256; i++)
+                        def[i] = def[256 + i] = def[512 + i] = (ushort)(i * 256);
+                    SetDeviceGammaRamp(hdc, def);
+                }
+                _isEnabled = false;
+            }
+            finally { ReleaseDC(IntPtr.Zero, hdc); }
+        }
+    }
+
+    // ── Energy Saver Helper (powercfg) ──────────────────────────────
+    internal static class EnergySaverHelper
+    {
+        private static readonly string PowerSaverGuid = "a1841308-3541-4fab-bc81-f71556f20b4a";
+        private static readonly string BalancedGuid = "381b4222-f694-41f0-9685-ff5bb260df2e";
+        private static bool _isEnabled;
+
+        public static bool IsEnabled => _isEnabled;
+
+        public static void Toggle()
+        {
+            try
+            {
+                _isEnabled = !_isEnabled;
+                string targetGuid = _isEnabled ? PowerSaverGuid : BalancedGuid;
+                Process.Start(new ProcessStartInfo("powercfg", $"/setactive {targetGuid}")
+                {
+                    CreateNoWindow = true,
+                    WindowStyle = ProcessWindowStyle.Hidden,
+                    UseShellExecute = false
+                });
+            }
+            catch { _isEnabled = !_isEnabled; } // revert on failure
+        }
+    }
+
+    // ── Nearby Sharing Helper (Registry CDP) ────────────────────────
+    internal static class NearbySharingHelper
+    {
+        private const string CdpKeyPath = @"Software\Microsoft\Windows\CurrentVersion\CDP";
+        private static bool _isEnabled;
+
+        static NearbySharingHelper()
+        {
+            // Read current state from registry
+            try
+            {
+                using var key = Registry.CurrentUser.OpenSubKey(CdpKeyPath);
+                if (key != null)
+                {
+                    var val = key.GetValue("NearShareChannelUserAuthzPolicy");
+                    _isEnabled = val is int i && i > 0;
+                }
+            }
+            catch { }
+        }
+
+        public static bool IsEnabled => _isEnabled;
+
+        public static void Toggle()
+        {
+            try
+            {
+                _isEnabled = !_isEnabled;
+                using var key = Registry.CurrentUser.CreateSubKey(CdpKeyPath);
+                if (key != null)
+                {
+                    int value = _isEnabled ? 1 : 0;
+                    key.SetValue("NearShareChannelUserAuthzPolicy", value, RegistryValueKind.DWord);
+                    key.SetValue("CdpSessionUserAuthzPolicy", _isEnabled ? 2 : 0, RegistryValueKind.DWord);
+                }
+            }
+            catch { _isEnabled = !_isEnabled; }
+        }
+    }
+
+    public static class AudioManager
+    {
+        private static readonly Guid _iidAudioEndpointVolume = new Guid("5CDF2C82-841E-4546-9722-0CF74078229A");
+
+        private static IAudioEndpointVolume? GetVolumeControl()
+        {
+            try
+            {
+                var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+                // eRender = 0, eMultimedia = 1
+                enumerator.GetDefaultAudioEndpoint(0, 1, out object deviceObj);
+                if (deviceObj == null) return null;
+                var device = (IMMDevice)deviceObj;
+                var iid = _iidAudioEndpointVolume;
+                device.Activate(ref iid, 23, IntPtr.Zero, out object volumeObj);
+                return volumeObj as IAudioEndpointVolume;
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        public static float GetMasterVolume()
+        {
+            try
+            {
+                var volume = GetVolumeControl();
+                if (volume == null) return 50f;
+                volume.GetMasterVolumeLevelScalar(out float level);
+                return level * 100f;
+            }
+            catch
+            {
+                return 50f;
+            }
+        }
+
+        public static void SetMasterVolume(float level)
+        {
+            try
+            {
+                var volume = GetVolumeControl();
+                if (volume == null) return;
+                var guid = Guid.Empty;
+                volume.SetMasterVolumeLevelScalar(Math.Max(0f, Math.Min(1f, level / 100f)), ref guid);
+            }
+            catch { }
+        }
+
+        public static bool GetMute()
+        {
+            try
+            {
+                var volume = GetVolumeControl();
+                if (volume == null) return false;
+                volume.GetMute(out bool mute);
+                return mute;
+            }
+            catch { return false; }
+        }
+
+        public static void SetMute(bool mute)
+        {
+            try
+            {
+                var volume = GetVolumeControl();
+                if (volume == null) return;
+                var guid = Guid.Empty;
+                volume.SetMute(mute, ref guid);
+            }
+            catch { }
+        }
+    }
+
+    public class ControlCenterForm : Form
+    {
+        [DllImport("dwmapi.dll")]
+        private static extern int DwmSetWindowAttribute(IntPtr hwnd, int attr, ref int attrValue, int attrSize);
+
+        [DllImport("user32.dll")]
+        private static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
+
+        private enum AccentState
+        {
+            ACCENT_DISABLED = 0,
+            ACCENT_ENABLE_GRADIENT = 1,
+            ACCENT_ENABLE_TRANSPARENTGRADIENT = 2,
+            ACCENT_ENABLE_BLURBEHIND = 3,
+            ACCENT_ENABLE_ACRYLICBLURBEHIND = 4
+        }
+
+        private enum WindowCompositionAttribute
+        {
+            WCA_ACCENT_POLICY = 19
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct AccentPolicy
+        {
+            public AccentState AccentState;
+            public int AccentFlags;
+            public int GradientColor;
+            public int AnimationId;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct WindowCompositionAttributeData
+        {
+            public WindowCompositionAttribute Attribute;
+            public IntPtr Data;
+            public int SizeOfData;
+        }
+
+        private void EnableBlur()
+        {
+            var accent = new AccentPolicy
+            {
+                AccentState = AccentState.ACCENT_ENABLE_ACRYLICBLURBEHIND,
+                GradientColor = (0 << 24) | (0x151515 & 0xFFFFFF)
+            };
+            int accentStructSize = Marshal.SizeOf(accent);
+            IntPtr accentPtr = Marshal.AllocHGlobal(accentStructSize);
+            Marshal.StructureToPtr(accent, accentPtr, false);
+
+            var data = new WindowCompositionAttributeData
+            {
+                Attribute = WindowCompositionAttribute.WCA_ACCENT_POLICY,
+                Data = accentPtr,
+                SizeOfData = accentStructSize
+            };
+
+            SetWindowCompositionAttribute(this.Handle, ref data);
+            Marshal.FreeHGlobal(accentPtr);
+
+            int value = 1;
+            DwmSetWindowAttribute(this.Handle, 20, ref value, sizeof(int));
+        }
+
+        private static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle bounds, int radius)
+        {
+            int d = radius * 2;
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            if (radius == 0)
+            {
+                path.AddRectangle(bounds);
+                return path;
+            }
+            path.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
+            path.AddArc(bounds.Right - d, bounds.Y, d, d, 270, 90);
+            path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+            path.AddArc(bounds.X, bounds.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+
+        public ControlCenterForm(Form owner)
+        {
+            var configuredMenuColor = Color.FromArgb(Form1.CurrentSettings.MenuColorArgb);
+            var menuColor = Color.FromArgb(255, configuredMenuColor.R, configuredMenuColor.G, configuredMenuColor.B);
+
+            this.DoubleBuffered = true;
+            this.FormBorderStyle = FormBorderStyle.None;
+            this.BackColor = menuColor;
+            this.ShowInTaskbar = false;
+            this.TopMost = true;
+            this.Size = new Size(320, 400);
+            this.Deactivate += (s, e) =>
+            {
+                if (owner != null && !owner.IsDisposed && owner.IsHandleCreated)
+                {
+                    owner.BeginInvoke(new Action(() =>
+                    {
+                        if (this.IsDisposed) return;
+                        var active = Form.ActiveForm;
+                        if (active != owner && active != this)
+                        {
+                            this.Close();
+                            owner.Close();
+                        }
+                        else
+                        {
+                            this.Close();
+                        }
+                    }));
+                }
+                else
+                {
+                    this.Close();
+                }
+            };
+            this.HandleCreated += (s, e) => EnableBlur();
+            this.Activated += (s, e) => EnableBlur();
+
+            this.Region = new Region(RoundedRect(new Rectangle(0, 0, 320, 400), 16));
+
+            var contentPanel = new Panel
+            {
+                Dock = DockStyle.Fill,
+                BackColor = menuColor,
+                Padding = new Padding(1)
+            };
+            this.Controls.Add(contentPanel);
+
+            bool isEthernet = StartMenuForm.IsEthernetActive();
+            var networkLabel = new Label
+            {
+                Location = new Point(20, 15),
+                Size = new Size(280, 20),
+                ForeColor = Color.FromArgb(240, 240, 240),
+                Font = new Font("Segoe UI", 9.5f, FontStyle.Bold),
+                Text = (isEthernet ? "Kablolu Baglanti: " : "Kablosuz Baglanti: ") + StartMenuForm.GetActiveNetworkName()
+            };
+            contentPanel.Controls.Add(networkLabel);
+
+            var nightLightBtn = new ControlCenterToggleButton("Gece Isigi", NightLightHelper.IsEnabled, null)
+            { Location = new Point(20, 45), Font = new Font("Segoe UI", 8.5f, FontStyle.Bold) };
+            nightLightBtn.SetClickAction(() =>
+            {
+                NightLightHelper.Toggle();
+                nightLightBtn.SetActive(NightLightHelper.IsEnabled);
+            });
+            contentPanel.Controls.Add(nightLightBtn);
+
+            var energySaverBtn = new ControlCenterToggleButton("Enerji Tasarrufu", EnergySaverHelper.IsEnabled, null)
+            { Location = new Point(165, 45), Font = new Font("Segoe UI", 8.5f, FontStyle.Bold) };
+            energySaverBtn.SetClickAction(() =>
+            {
+                EnergySaverHelper.Toggle();
+                energySaverBtn.SetActive(EnergySaverHelper.IsEnabled);
+            });
+            contentPanel.Controls.Add(energySaverBtn);
+
+            var nearbySharingBtn = new ControlCenterToggleButton("Yakin Paylasim", NearbySharingHelper.IsEnabled, null)
+            { Location = new Point(20, 95), Font = new Font("Segoe UI", 8.5f, FontStyle.Bold) };
+            nearbySharingBtn.SetClickAction(() =>
+            {
+                NearbySharingHelper.Toggle();
+                nearbySharingBtn.SetActive(NearbySharingHelper.IsEnabled);
+            });
+            contentPanel.Controls.Add(nearbySharingBtn);
+
+            var wirelessDisplayBtn = new ControlCenterToggleButton("Kablolu Ekran", false, () =>
+            {
+                try { Process.Start(new ProcessStartInfo("DisplaySwitch.exe") { UseShellExecute = true }); } catch { }
+            }) { Location = new Point(165, 95), Font = new Font("Segoe UI", 8.5f, FontStyle.Bold) };
+            contentPanel.Controls.Add(wirelessDisplayBtn);
+
+            var projectBtn = new ControlCenterMenuButton("Yansit (Projeksiyon)")
+            {
+                Location = new Point(20, 150),
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+            };
+            projectBtn.Click += (s, e) =>
+            {
+                var menu = new ContextMenuStrip
+                {
+                    Renderer = new Form1.ModernTrayMenuRenderer(),
+                    BackColor = Color.FromArgb(32, 32, 34),
+                    ForeColor = Color.FromArgb(246, 247, 249),
+                    Font = new Font("Segoe UI", 9.5f)
+                };
+                menu.Items.Add("Sadece Bilgisayar Ekrani", null, (sender, args) => { try { Process.Start(new ProcessStartInfo("DisplaySwitch.exe", "/internal") { UseShellExecute = true }); } catch { } });
+                menu.Items.Add("Yinele (Clone)", null, (sender, args) => { try { Process.Start(new ProcessStartInfo("DisplaySwitch.exe", "/clone") { UseShellExecute = true }); } catch { } });
+                menu.Items.Add("Uzat (Extend)", null, (sender, args) => { try { Process.Start(new ProcessStartInfo("DisplaySwitch.exe", "/extend") { UseShellExecute = true }); } catch { } });
+                menu.Items.Add("Sadece Ikinci Ekran", null, (sender, args) => { try { Process.Start(new ProcessStartInfo("DisplaySwitch.exe", "/external") { UseShellExecute = true }); } catch { } });
+                menu.Show(projectBtn, new Point(0, projectBtn.Height));
+            };
+            contentPanel.Controls.Add(projectBtn);
+
+            var accessibilityBtn = new ControlCenterMenuButton("Erisilebilirlik")
+            {
+                Location = new Point(20, 195),
+                Font = new Font("Segoe UI", 9f, FontStyle.Bold)
+            };
+            accessibilityBtn.Click += (s, e) =>
+            {
+                var menu = new ContextMenuStrip
+                {
+                    Renderer = new Form1.ModernTrayMenuRenderer(),
+                    BackColor = Color.FromArgb(32, 32, 34),
+                    ForeColor = Color.FromArgb(246, 247, 249),
+                    Font = new Font("Segoe UI", 9.5f)
+                };
+                menu.Items.Add("Buyutec (Magnifier)", null, (sender, args) => { try { Process.Start(new ProcessStartInfo("magnify.exe") { UseShellExecute = true }); } catch { } });
+                menu.Items.Add("Ekran Okuyucu (Narrator)", null, (sender, args) => { try { Process.Start(new ProcessStartInfo("Narrator.exe") { UseShellExecute = true }); } catch { } });
+                menu.Items.Add("Renk Filtreleri", null, (sender, args) => {
+                    try {
+                        using var rk = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\ColorFiltering");
+                        if (rk != null) {
+                            var cur = rk.GetValue("Active");
+                            int newVal = (cur is int v && v == 1) ? 0 : 1;
+                            rk.SetValue("Active", newVal, RegistryValueKind.DWord);
+                        }
+                    } catch { }
+                });
+                menu.Items.Add("Canli Alt Yazi", null, (sender, args) => {
+                    try {
+                        // Windows 11 Live Captions
+                        Process.Start(new ProcessStartInfo("ms-gamebar://livecaptions") { UseShellExecute = true });
+                    } catch {
+                        try { Process.Start(new ProcessStartInfo("LiveCaptions.exe") { UseShellExecute = true }); } catch { }
+                    }
+                });
+                menu.Items.Add("Mono Ses", null, (sender, args) => {
+                    try {
+                        using var rk = Registry.CurrentUser.CreateSubKey(@"Software\Microsoft\Multimedia\Audio");
+                        if (rk != null) {
+                            var cur = rk.GetValue("AccessibilityMonoMixState");
+                            int newVal = (cur is int v && v == 1) ? 0 : 1;
+                            rk.SetValue("AccessibilityMonoMixState", newVal, RegistryValueKind.DWord);
+                        }
+                    } catch { }
+                });
+                menu.Items.Add("Ses Erisimi", null, (sender, args) => {
+                    try {
+                        Process.Start(new ProcessStartInfo("VoiceAccess.exe") { UseShellExecute = true });
+                    } catch {
+                        try { Process.Start(new ProcessStartInfo("ms-voiceaccess:") { UseShellExecute = true }); } catch { }
+                    }
+                });
+                menu.Items.Add("Yapiskan Tuslar", null, (sender, args) => {
+                    try {
+                        using var rk = Registry.CurrentUser.CreateSubKey(@"Control Panel\Accessibility\StickyKeys");
+                        if (rk != null) {
+                            string? flags = rk.GetValue("Flags") as string;
+                            // Flag 1 = enabled. Toggle bit 0.
+                            int f = 0;
+                            if (flags != null) int.TryParse(flags, out f);
+                            f ^= 1; // toggle enable bit
+                            rk.SetValue("Flags", f.ToString(), RegistryValueKind.String);
+                        }
+                    } catch { }
+                });
+                menu.Show(accessibilityBtn, new Point(0, accessibilityBtn.Height));
+            };
+            contentPanel.Controls.Add(accessibilityBtn);
+
+            // Separator above volume section
+            contentPanel.Paint += (s, e) =>
+            {
+                using var sepPen = new Pen(Color.FromArgb(30, 255, 255, 255), 1f);
+                e.Graphics.DrawLine(sepPen, 20, 245, 300, 245);
+            };
+
+            var volumeLabel = new Label
+            {
+                Location = new Point(20, 252),
+                Size = new Size(200, 16),
+                ForeColor = Color.FromArgb(180, 180, 180),
+                Font = new Font("Segoe UI", 8f),
+                Text = "Ses: " + ((int)AudioManager.GetMasterVolume()) + "%"
+            };
+            contentPanel.Controls.Add(volumeLabel);
+
+            var volumeSlider = new ControlCenterVolumeSlider
+            {
+                Location = new Point(20, 272),
+                Width = 200,
+                Height = 24
+            };
+            volumeSlider.VolumeChanged += (s, e) =>
+            {
+                volumeLabel.Text = "Ses: " + ((int)volumeSlider.VolumePercent) + "%";
+            };
+            contentPanel.Controls.Add(volumeSlider);
+
+            var mixerBtn = new ControlCenterSquareButton("mixer")
+            {
+                Location = new Point(232, 269)
+            };
+            mixerBtn.Click += (s, e) =>
+            {
+                try { Process.Start(new ProcessStartInfo("sndvol.exe") { UseShellExecute = true }); } catch { }
+            };
+            contentPanel.Controls.Add(mixerBtn);
+
+            var settingsBtn = new ControlCenterSquareButton("settings")
+            {
+                Location = new Point(270, 269)
+            };
+            settingsBtn.Click += (s, e) =>
+            {
+                try { Process.Start(new ProcessStartInfo("ms-settings:") { UseShellExecute = true }); } catch { }
+            };
+            contentPanel.Controls.Add(settingsBtn);
+
+            networkLabel.BringToFront();
+            nightLightBtn.BringToFront();
+            energySaverBtn.BringToFront();
+            nearbySharingBtn.BringToFront();
+            wirelessDisplayBtn.BringToFront();
+            projectBtn.BringToFront();
+            accessibilityBtn.BringToFront();
+            volumeSlider.BringToFront();
+            mixerBtn.BringToFront();
+            settingsBtn.BringToFront();
+        }
+    }
+
+    public class ControlCenterVolumeSlider : Control
+    {
+        private float _volumePercent;
+        private bool _isDragging;
+
+        public event EventHandler? VolumeChanged;
+
+        [Browsable(false)]
+        [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
+        public float VolumePercent
+        {
+            get => _volumePercent;
+            set
+            {
+                _volumePercent = Math.Max(0f, Math.Min(100f, value));
+                Invalidate();
+            }
+        }
+
+        public ControlCenterVolumeSlider()
+        {
+            SetStyle(
+                ControlStyles.UserPaint |
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw,
+                true);
+
+            Height = 24;
+            Cursor = Cursors.Hand;
+            _volumePercent = AudioManager.GetMasterVolume();
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                _isDragging = true;
+                UpdateVolumeFromMouse(e.X);
+            }
+            base.OnMouseDown(e);
+        }
+
+        protected override void OnMouseMove(MouseEventArgs e)
+        {
+            if (_isDragging)
+            {
+                UpdateVolumeFromMouse(e.X);
+            }
+            base.OnMouseMove(e);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            _isDragging = false;
+            base.OnMouseUp(e);
+        }
+
+        private void UpdateVolumeFromMouse(int mouseX)
+        {
+            float pct = (float)mouseX / Width * 100f;
+            VolumePercent = pct;
+            AudioManager.SetMasterVolume(VolumePercent);
+            VolumeChanged?.Invoke(this, EventArgs.Empty);
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            int trackY = Height / 2;
+            int trackHeight = 4;
+            int thumbSize = 12;
+
+            using (var trackBrush = new SolidBrush(Color.FromArgb(60, 255, 255, 255)))
+            {
+                g.FillRectangle(trackBrush, 0, trackY - trackHeight / 2, Width, trackHeight);
+            }
+
+            int fillWidth = (int)(_volumePercent / 100f * Width);
+            using (var fillBrush = new SolidBrush(Color.FromArgb(0, 120, 215)))
+            {
+                g.FillRectangle(fillBrush, 0, trackY - trackHeight / 2, fillWidth, trackHeight);
+            }
+
+            int thumbX = fillWidth - thumbSize / 2;
+            int thumbY = trackY - thumbSize / 2;
+            using (var thumbBrush = new SolidBrush(Color.White))
+            {
+                g.FillEllipse(thumbBrush, thumbX, thumbY, thumbSize, thumbSize);
+            }
+        }
+    }
+
+    public class ControlCenterToggleButton : Control
+    {
+        private readonly string _text;
+        private Action? _clickAction;
+        private bool _active;
+        private bool _hovered;
+
+        public ControlCenterToggleButton(string text, bool initialActive, Action? clickAction)
+        {
+            _text = text;
+            _active = initialActive;
+            _clickAction = clickAction;
+
+            SetStyle(
+                ControlStyles.UserPaint |
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw,
+                true);
+
+            Size = new Size(135, 40);
+            Cursor = Cursors.Hand;
+        }
+
+        public void SetClickAction(Action action) => _clickAction = action;
+        public void SetActive(bool active) { _active = active; Invalidate(); }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            _hovered = true;
+            Invalidate();
+            base.OnMouseEnter(e);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            _hovered = false;
+            Invalidate();
+            base.OnMouseLeave(e);
+        }
+
+        protected override void OnClick(EventArgs e)
+        {
+            _clickAction?.Invoke();
+            base.OnClick(e);
+        }
+
+        private static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle bounds, int radius)
+        {
+            int d = radius * 2;
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            if (radius == 0)
+            {
+                path.AddRectangle(bounds);
+                return path;
+            }
+            path.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
+            path.AddArc(bounds.Right - d, bounds.Y, d, d, 270, 90);
+            path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+            path.AddArc(bounds.X, bounds.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (var path = RoundedRect(rect, 6))
+            {
+                Color bgColor = _active
+                    ? Color.FromArgb(0, 120, 215)
+                    : _hovered
+                        ? Color.FromArgb(45, 255, 255, 255)
+                        : Color.FromArgb(20, 255, 255, 255);
+
+                using (var brush = new SolidBrush(bgColor))
+                {
+                    g.FillPath(brush, path);
+                }
+
+                using (var borderPen = new Pen(Color.FromArgb(30, 255, 255, 255), 1f))
+                {
+                    g.DrawPath(borderPen, path);
+                }
+            }
+
+            using (var brush = new SolidBrush(Color.White))
+            using (var format = new StringFormat
+            {
+                Alignment = StringAlignment.Center,
+                LineAlignment = StringAlignment.Center
+            })
+            {
+                g.DrawString(_text, Font, brush, ClientRectangle, format);
+            }
+        }
+    }
+
+    public class ControlCenterMenuButton : Control
+    {
+        private readonly string _text;
+        private bool _hovered;
+
+        public ControlCenterMenuButton(string text)
+        {
+            _text = text;
+            SetStyle(
+                ControlStyles.UserPaint |
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw,
+                true);
+
+            Size = new Size(280, 35);
+            Cursor = Cursors.Hand;
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            _hovered = true;
+            Invalidate();
+            base.OnMouseEnter(e);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            _hovered = false;
+            Invalidate();
+            base.OnMouseLeave(e);
+        }
+
+        private static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle bounds, int radius)
+        {
+            int d = radius * 2;
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            if (radius == 0)
+            {
+                path.AddRectangle(bounds);
+                return path;
+            }
+            path.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
+            path.AddArc(bounds.Right - d, bounds.Y, d, d, 270, 90);
+            path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+            path.AddArc(bounds.X, bounds.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.AntiAlias;
+
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (var path = RoundedRect(rect, 6))
+            {
+                Color bgColor = _hovered
+                    ? Color.FromArgb(45, 255, 255, 255)
+                    : Color.FromArgb(20, 255, 255, 255);
+
+                using (var brush = new SolidBrush(bgColor))
+                {
+                    g.FillPath(brush, path);
+                }
+
+                using (var borderPen = new Pen(Color.FromArgb(30, 255, 255, 255), 1f))
+                {
+                    g.DrawPath(borderPen, path);
+                }
+            }
+
+            using (var brush = new SolidBrush(Color.White))
+            using (var format = new StringFormat
+            {
+                Alignment = StringAlignment.Near,
+                LineAlignment = StringAlignment.Center
+            })
+            {
+                var textRect = new Rectangle(15, 0, Width - 30, Height);
+                g.DrawString(_text, Font, brush, textRect, format);
+            }
+
+            using (var pen = new Pen(Color.White, 1.5f))
+            {
+                pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                int arrowX = Width - 20;
+                int arrowY = Height / 2 - 1;
+                g.DrawLine(pen, arrowX, arrowY, arrowX + 4, arrowY + 4);
+                g.DrawLine(pen, arrowX + 4, arrowY + 4, arrowX + 8, arrowY);
+            }
+        }
+    }
+
+    public class ControlCenterSquareButton : Control
+    {
+        private readonly string _type;
+        private bool _hovered;
+
+        public ControlCenterSquareButton(string type)
+        {
+            _type = type;
+            SetStyle(
+                ControlStyles.UserPaint |
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw,
+                true);
+
+            Size = new Size(30, 30);
+            Cursor = Cursors.Hand;
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            _hovered = true;
+            Invalidate();
+            base.OnMouseEnter(e);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            _hovered = false;
+            Invalidate();
+            base.OnMouseLeave(e);
+        }
+
+        private static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle bounds, int radius)
+        {
+            int d = radius * 2;
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            if (radius == 0)
+            {
+                path.AddRectangle(bounds);
+                return path;
+            }
+            path.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
+            path.AddArc(bounds.Right - d, bounds.Y, d, d, 270, 90);
+            path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+            path.AddArc(bounds.X, bounds.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (var path = RoundedRect(rect, 6))
+            {
+                Color bgColor = _hovered
+                    ? Color.FromArgb(45, 255, 255, 255)
+                    : Color.FromArgb(20, 255, 255, 255);
+
+                using (var brush = new SolidBrush(bgColor))
+                {
+                    g.FillPath(brush, path);
+                }
+
+                using (var borderPen = new Pen(Color.FromArgb(30, 255, 255, 255), 1f))
+                {
+                    g.DrawPath(borderPen, path);
+                }
+            }
+
+            using var pen = new Pen(Color.White, 2f);
+            pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+            pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+
+            if (_type == "mixer")
+            {
+                PointF[] points = {
+                    new PointF(8, 11),
+                    new PointF(12, 11),
+                    new PointF(16, 7),
+                    new PointF(16, 23),
+                    new PointF(12, 19),
+                    new PointF(8, 19)
+                };
+                using var brush = new SolidBrush(Color.White);
+                g.FillPolygon(brush, points);
+                g.DrawArc(pen, 13, 11, 8, 8, -60, 120);
+            }
+            else if (_type == "settings")
+            {
+                g.DrawEllipse(pen, 9, 9, 12, 12);
+                for (int angle = 0; angle < 360; angle += 45)
+                {
+                    double rad = angle * Math.PI / 180.0;
+                    float x1 = 15f + (float)(6 * Math.Cos(rad));
+                    float y1 = 15f + (float)(6 * Math.Sin(rad));
+                    float x2 = 15f + (float)(9 * Math.Cos(rad));
+                    float y2 = 15f + (float)(9 * Math.Sin(rad));
+                    g.DrawLine(pen, x1, y1, x2, y2);
+                }
+            }
+        }
+    }
+
+    public class QuickSettingsPillButton : Control
+    {
+        private bool _hovered;
+        private bool _pressed;
+
+        public QuickSettingsPillButton()
+        {
+            SetStyle(
+                ControlStyles.UserPaint |
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw,
+                true);
+
+            Size = new Size(48, 32);
+            Cursor = Cursors.Hand;
+
+            var toolTip = new ToolTip();
+            toolTip.SetToolTip(this, "Hizli Ayarlar");
+        }
+
+        protected override void OnMouseEnter(EventArgs e)
+        {
+            _hovered = true;
+            Invalidate();
+            base.OnMouseEnter(e);
+        }
+
+        protected override void OnMouseLeave(EventArgs e)
+        {
+            _hovered = false;
+            _pressed = false;
+            Invalidate();
+            base.OnMouseLeave(e);
+        }
+
+        protected override void OnMouseDown(MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Left)
+            {
+                _pressed = true;
+                Invalidate();
+            }
+            base.OnMouseDown(e);
+        }
+
+        protected override void OnMouseUp(MouseEventArgs e)
+        {
+            _pressed = false;
+            Invalidate();
+            base.OnMouseUp(e);
+        }
+
+        private static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle bounds, int radius)
+        {
+            int d = radius * 2;
+            var path = new System.Drawing.Drawing2D.GraphicsPath();
+            if (radius == 0)
+            {
+                path.AddRectangle(bounds);
+                return path;
+            }
+            path.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
+            path.AddArc(bounds.Right - d, bounds.Y, d, d, 270, 90);
+            path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+            path.AddArc(bounds.X, bounds.Bottom - d, d, d, 90, 90);
+            path.CloseFigure();
+            return path;
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            var g = e.Graphics;
+            g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            using (var path = RoundedRect(rect, 16))
+            {
+                if (_pressed)
+                {
+                    using var brush = new SolidBrush(Color.FromArgb(90, 255, 255, 255));
+                    g.FillPath(brush, path);
+                }
+                else if (_hovered)
+                {
+                    using var brush = new SolidBrush(Color.FromArgb(40, 255, 255, 255));
+                    g.FillPath(brush, path);
+                }
+                else
+                {
+                    using var brush = new SolidBrush(Color.FromArgb(15, 255, 255, 255));
+                    g.FillPath(brush, path);
+                }
+
+                using var borderPen = new Pen(Color.FromArgb(30, 255, 255, 255), 1f);
+                g.DrawPath(borderPen, path);
+            }
+
+            bool isEthernet = StartMenuForm.IsEthernetActive();
+            using (var pen = new Pen(Color.FromArgb(240, 240, 240), 2f))
+            {
+                pen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                pen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+
+                if (isEthernet)
+                {
+                    g.DrawRectangle(pen, 7, 10, 10, 8);
+                    g.DrawLine(pen, 12, 18, 12, 21);
+                    g.DrawLine(pen, 9, 21, 15, 21);
+                }
+                else
+                {
+                    using var dotBrush = new SolidBrush(Color.FromArgb(240, 240, 240));
+                    g.FillEllipse(dotBrush, 11, 21, 2, 2);
+                    g.DrawArc(pen, 7, 17, 10, 10, -135, 90);
+                    g.DrawArc(pen, 3, 12, 18, 18, -135, 90);
+                }
+            }
+
+            PointF[] speakerPoints = {
+                new PointF(26, 12),
+                new PointF(29, 12),
+                new PointF(33, 8),
+                new PointF(33, 24),
+                new PointF(29, 20),
+                new PointF(26, 20)
+            };
+            using (var brush = new SolidBrush(Color.FromArgb(240, 240, 240)))
+            {
+                g.FillPolygon(brush, speakerPoints);
+            }
+
+            using (var soundPen = new Pen(Color.FromArgb(240, 240, 240), 1.8f))
+            {
+                soundPen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                soundPen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                g.DrawArc(soundPen, 29, 11, 10, 10, -60, 120);
+            }
+        }
+    }
+
 }
