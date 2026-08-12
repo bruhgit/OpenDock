@@ -33,6 +33,7 @@ namespace OpenDock
         public int TransitionStarsCount { get; set; } = 20;
         public float TransitionOverlapPadding { get; set; } = 1.5f;
         public int TransitionSwitchDelay { get; set; } = 100;
+        public string TransitionBackgroundImagePath { get; set; } = "";
     }
 
     public partial class Form1 : Form
@@ -2286,21 +2287,21 @@ namespace OpenDock
                 Font = new Font("Segoe UI", 9.5f)
             };
 
-            contextMenu.Items.Add("Yenile", null, (s, e) => RefreshDockIcons());
+            contextMenu.Items.Add(Loc.Get("refresh"), null, (s, e) => RefreshDockIcons());
             contextMenu.Items.Add("-");
 
-            var appearanceMenu = new ToolStripMenuItem("Gorunum");
-            appearanceMenu.DropDownItems.Add("32x32 logo sec", null, (s, e) => SelectMenuLogo());
-            appearanceMenu.DropDownItems.Add("Varsayilan Windows logosu", null, (s, e) =>
+            var appearanceMenu = new ToolStripMenuItem(Loc.Get("appearance"));
+            appearanceMenu.DropDownItems.Add(Loc.Get("select_logo"), null, (s, e) => SelectMenuLogo());
+            appearanceMenu.DropDownItems.Add(Loc.Get("default_logo"), null, (s, e) =>
             {
                 CurrentSettings.MenuLogoPath = "";
                 SaveSettings();
                 RefreshDockIcons();
             });
             appearanceMenu.DropDownItems.Add("-");
-            appearanceMenu.DropDownItems.Add("Dock rengi", null, (s, e) =>
+            appearanceMenu.DropDownItems.Add(Loc.Get("dock_color"), null, (s, e) =>
                 SelectColor(
-                    "Dock rengi",
+                    Loc.Get("dock_color"),
                     settings => settings.DockColorArgb,
                     (settings, color) => settings.DockColorArgb = color,
                     () =>
@@ -2308,9 +2309,9 @@ namespace OpenDock
                         ApplyDockAppearance();
                     },
                     175));
-            appearanceMenu.DropDownItems.Add("Menu rengi", null, (s, e) =>
+            appearanceMenu.DropDownItems.Add(Loc.Get("menu_color"), null, (s, e) =>
                 SelectColor(
-                    "Menu rengi",
+                    Loc.Get("menu_color"),
                     settings => settings.MenuColorArgb,
                     (settings, color) => settings.MenuColorArgb = color,
                     () =>
@@ -2318,9 +2319,9 @@ namespace OpenDock
                         _startMenu?.Close();
                     },
                     175));
-            appearanceMenu.DropDownItems.Add("Arama kutusu rengi", null, (s, e) =>
+            appearanceMenu.DropDownItems.Add(Loc.Get("search_color"), null, (s, e) =>
                 SelectColor(
-                    "Arama kutusu rengi",
+                    Loc.Get("search_color"),
                     settings => settings.SearchColorArgb,
                     (settings, color) => settings.SearchColorArgb = color,
                     () =>
@@ -2328,21 +2329,21 @@ namespace OpenDock
                         _startMenu?.Close();
                     },
                     255));
-            var positionMenu = new ToolStripMenuItem("Konum");
-            positionMenu.DropDownItems.Add("Alt (Yatay)", null, (s, e) => ChangeDockPosition("Bottom"));
-            positionMenu.DropDownItems.Add("Üst (Yatay)", null, (s, e) => ChangeDockPosition("Top"));
-            positionMenu.DropDownItems.Add("Sol (Dikey)", null, (s, e) => ChangeDockPosition("Left"));
-            positionMenu.DropDownItems.Add("Sağ (Dikey)", null, (s, e) => ChangeDockPosition("Right"));
+            var positionMenu = new ToolStripMenuItem(Loc.Get("position"));
+            positionMenu.DropDownItems.Add(Loc.Get("pos_bottom"), null, (s, e) => ChangeDockPosition("Bottom"));
+            positionMenu.DropDownItems.Add(Loc.Get("pos_top"), null, (s, e) => ChangeDockPosition("Top"));
+            positionMenu.DropDownItems.Add(Loc.Get("pos_left"), null, (s, e) => ChangeDockPosition("Left"));
+            positionMenu.DropDownItems.Add(Loc.Get("pos_right"), null, (s, e) => ChangeDockPosition("Right"));
             appearanceMenu.DropDownItems.Add(positionMenu);
 
-            var opacityMenu = new ToolStripMenuItem("Dock Opaklığı");
-            opacityMenu.DropDownItems.Add("Tamamen Şeffaf (0)", null, (s, e) => { CurrentSettings.DockBackgroundAlpha = 0; SaveSettings(); ApplyDockAppearance(); });
-            opacityMenu.DropDownItems.Add("Çok Şeffaf (80)", null, (s, e) => { CurrentSettings.DockBackgroundAlpha = 80; SaveSettings(); ApplyDockAppearance(); });
-            opacityMenu.DropDownItems.Add("Varsayılan (175)", null, (s, e) => { CurrentSettings.DockBackgroundAlpha = 175; SaveSettings(); ApplyDockAppearance(); });
-            opacityMenu.DropDownItems.Add("Az Şeffaf (220)", null, (s, e) => { CurrentSettings.DockBackgroundAlpha = 220; SaveSettings(); ApplyDockAppearance(); });
-            opacityMenu.DropDownItems.Add("Mat (255)", null, (s, e) => { CurrentSettings.DockBackgroundAlpha = 255; SaveSettings(); ApplyDockAppearance(); });
-            opacityMenu.DropDownItems.Add("Özel Değer...", null, (s, e) => {
-                string res = ShowInputDialog("Opaklık değerini girin (0 - 255):", "Dock Opaklık Ayarı", CurrentSettings.DockBackgroundAlpha.ToString());
+            var opacityMenu = new ToolStripMenuItem(Loc.Get("dock_opacity"));
+            opacityMenu.DropDownItems.Add("0%", null, (s, e) => { CurrentSettings.DockBackgroundAlpha = 0; SaveSettings(); ApplyDockAppearance(); });
+            opacityMenu.DropDownItems.Add("30%", null, (s, e) => { CurrentSettings.DockBackgroundAlpha = 80; SaveSettings(); ApplyDockAppearance(); });
+            opacityMenu.DropDownItems.Add("70%", null, (s, e) => { CurrentSettings.DockBackgroundAlpha = 175; SaveSettings(); ApplyDockAppearance(); });
+            opacityMenu.DropDownItems.Add("85%", null, (s, e) => { CurrentSettings.DockBackgroundAlpha = 220; SaveSettings(); ApplyDockAppearance(); });
+            opacityMenu.DropDownItems.Add("100%", null, (s, e) => { CurrentSettings.DockBackgroundAlpha = 255; SaveSettings(); ApplyDockAppearance(); });
+            opacityMenu.DropDownItems.Add(Loc.Get("dialog_cancel") + " / " + Loc.Get("dialog_ok") + "...", null, (s, e) => {
+                string res = ShowInputDialog(Loc.Get("prompt_opacity"), Loc.Get("title_opacity"), CurrentSettings.DockBackgroundAlpha.ToString());
                 if (int.TryParse(res, out int val)) {
                     CurrentSettings.DockBackgroundAlpha = Math.Max(0, Math.Min(255, val));
                     SaveSettings();
@@ -2351,14 +2352,14 @@ namespace OpenDock
             });
             appearanceMenu.DropDownItems.Add(opacityMenu);
 
-            var iconSizeMenu = new ToolStripMenuItem("Dock İkon Boyutu");
-            iconSizeMenu.DropDownItems.Add("Küçük (24px)", null, (s, e) => { CurrentSettings.DockIconSize = 24; SaveSettings(); RefreshDockIcons(); });
-            iconSizeMenu.DropDownItems.Add("Varsayılan (32px)", null, (s, e) => { CurrentSettings.DockIconSize = 32; SaveSettings(); RefreshDockIcons(); });
-            iconSizeMenu.DropDownItems.Add("Orta (40px)", null, (s, e) => { CurrentSettings.DockIconSize = 40; SaveSettings(); RefreshDockIcons(); });
-            iconSizeMenu.DropDownItems.Add("Büyük (48px)", null, (s, e) => { CurrentSettings.DockIconSize = 48; SaveSettings(); RefreshDockIcons(); });
-            iconSizeMenu.DropDownItems.Add("Çok Büyük (64px)", null, (s, e) => { CurrentSettings.DockIconSize = 64; SaveSettings(); RefreshDockIcons(); });
-            iconSizeMenu.DropDownItems.Add("Özel Değer...", null, (s, e) => {
-                string res = ShowInputDialog("İkon piksel boyutunu girin (16 - 128):", "İkon Boyutu Ayarı", CurrentSettings.DockIconSize.ToString());
+            var iconSizeMenu = new ToolStripMenuItem(Loc.Get("dock_icon_size"));
+            iconSizeMenu.DropDownItems.Add("24px", null, (s, e) => { CurrentSettings.DockIconSize = 24; SaveSettings(); RefreshDockIcons(); });
+            iconSizeMenu.DropDownItems.Add("32px", null, (s, e) => { CurrentSettings.DockIconSize = 32; SaveSettings(); RefreshDockIcons(); });
+            iconSizeMenu.DropDownItems.Add("40px", null, (s, e) => { CurrentSettings.DockIconSize = 40; SaveSettings(); RefreshDockIcons(); });
+            iconSizeMenu.DropDownItems.Add("48px", null, (s, e) => { CurrentSettings.DockIconSize = 48; SaveSettings(); RefreshDockIcons(); });
+            iconSizeMenu.DropDownItems.Add("64px", null, (s, e) => { CurrentSettings.DockIconSize = 64; SaveSettings(); RefreshDockIcons(); });
+            iconSizeMenu.DropDownItems.Add(Loc.Get("dialog_cancel") + " / " + Loc.Get("dialog_ok") + "...", null, (s, e) => {
+                string res = ShowInputDialog(Loc.Get("prompt_size"), Loc.Get("title_size"), CurrentSettings.DockIconSize.ToString());
                 if (int.TryParse(res, out int val)) {
                     CurrentSettings.DockIconSize = Math.Max(16, Math.Min(128, val));
                     SaveSettings();
@@ -2368,7 +2369,7 @@ namespace OpenDock
             appearanceMenu.DropDownItems.Add(iconSizeMenu);
 
             appearanceMenu.DropDownItems.Add("-");
-            var showClockMenuItem = new ToolStripMenuItem("Saati Göster")
+            var showClockMenuItem = new ToolStripMenuItem(Loc.Get("show_clock"))
             {
                 CheckOnClick = true,
                 Checked = CurrentSettings.ShowClock
@@ -2381,7 +2382,7 @@ namespace OpenDock
             };
             appearanceMenu.DropDownItems.Add(showClockMenuItem);
 
-            appearanceMenu.DropDownItems.Add("QuickCSS Düzenle (quick.css)", null, (s, e) =>
+            appearanceMenu.DropDownItems.Add(Loc.Get("edit_css"), null, (s, e) =>
             {
                 try
                 {
@@ -2406,7 +2407,7 @@ namespace OpenDock
 
             contextMenu.Items.Add(appearanceMenu);
 
-            _startupMenuItem = new ToolStripMenuItem("Başlangıçta çalıştır")
+            _startupMenuItem = new ToolStripMenuItem(Loc.Get("run_startup"))
             {
                 CheckOnClick = true,
                 Checked = IsStartupEnabled()
@@ -2414,7 +2415,7 @@ namespace OpenDock
             _startupMenuItem.CheckedChanged += StartupMenuItem_CheckedChanged;
             contextMenu.Items.Add(_startupMenuItem);
 
-            var gameModeMenuItem = new ToolStripMenuItem("Oyun Modu")
+            var gameModeMenuItem = new ToolStripMenuItem(Loc.Get("game_mode"))
             {
                 CheckOnClick = true,
                 Checked = CurrentSettings.GameModeEnabled
@@ -2427,16 +2428,16 @@ namespace OpenDock
             };
             contextMenu.Items.Add(gameModeMenuItem);
 
-            var transitionSettingsMenu = new ToolStripMenuItem("Dönüş Ayarları");
+            var transitionSettingsMenu = new ToolStripMenuItem(Loc.Get("trans_settings"));
 
             // 1. FOV Settings
-            var fovMenu = new ToolStripMenuItem("Kamera Zoom / FOV");
-            fovMenu.DropDownItems.Add("Yakın (2.0)", null, (s, e) => { CurrentSettings.TransitionFocalScale = 2.0f; SaveSettings(); });
-            fovMenu.DropDownItems.Add("Varsayılan (2.8)", null, (s, e) => { CurrentSettings.TransitionFocalScale = 2.8f; SaveSettings(); });
-            fovMenu.DropDownItems.Add("Uzak (3.5)", null, (s, e) => { CurrentSettings.TransitionFocalScale = 3.5f; SaveSettings(); });
-            fovMenu.DropDownItems.Add("Çok Uzak (4.2)", null, (s, e) => { CurrentSettings.TransitionFocalScale = 4.2f; SaveSettings(); });
-            fovMenu.DropDownItems.Add("Özel Değer...", null, (s, e) => {
-                string res = ShowInputDialog("Kamera zoom faktörünü girin (örn. 2.8):", "Zoom / FOV Ayarı", CurrentSettings.TransitionFocalScale.ToString("0.0"));
+            var fovMenu = new ToolStripMenuItem(Loc.Get("cam_fov"));
+            fovMenu.DropDownItems.Add("2.0", null, (s, e) => { CurrentSettings.TransitionFocalScale = 2.0f; SaveSettings(); });
+            fovMenu.DropDownItems.Add("2.8", null, (s, e) => { CurrentSettings.TransitionFocalScale = 2.8f; SaveSettings(); });
+            fovMenu.DropDownItems.Add("3.5", null, (s, e) => { CurrentSettings.TransitionFocalScale = 3.5f; SaveSettings(); });
+            fovMenu.DropDownItems.Add("4.2", null, (s, e) => { CurrentSettings.TransitionFocalScale = 4.2f; SaveSettings(); });
+            fovMenu.DropDownItems.Add(Loc.Get("dialog_cancel") + " / " + Loc.Get("dialog_ok") + "...", null, (s, e) => {
+                string res = ShowInputDialog(Loc.Get("prompt_fov"), Loc.Get("title_fov"), CurrentSettings.TransitionFocalScale.ToString("0.0"));
                 if (float.TryParse(res, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float val)) {
                     CurrentSettings.TransitionFocalScale = val;
                     SaveSettings();
@@ -2445,13 +2446,13 @@ namespace OpenDock
             transitionSettingsMenu.DropDownItems.Add(fovMenu);
 
             // 2. Camera Offset (Z Offset) Settings
-            var offsetMenu = new ToolStripMenuItem("Kamera Derinliği");
-            offsetMenu.DropDownItems.Add("Düz (-3.0)", null, (s, e) => { CurrentSettings.TransitionCameraOffset = -3.0f; SaveSettings(); });
-            offsetMenu.DropDownItems.Add("Varsayılan (-4.5)", null, (s, e) => { CurrentSettings.TransitionCameraOffset = -4.5f; SaveSettings(); });
-            offsetMenu.DropDownItems.Add("Derin (-6.0)", null, (s, e) => { CurrentSettings.TransitionCameraOffset = -6.0f; SaveSettings(); });
-            offsetMenu.DropDownItems.Add("Çok Derin (-8.0)", null, (s, e) => { CurrentSettings.TransitionCameraOffset = -8.0f; SaveSettings(); });
-            offsetMenu.DropDownItems.Add("Özel Değer...", null, (s, e) => {
-                string res = ShowInputDialog("Kamera derinlik değerini girin (negatif, örn. -4.5):", "Kamera Derinliği Ayarı", CurrentSettings.TransitionCameraOffset.ToString("0.0"));
+            var offsetMenu = new ToolStripMenuItem(Loc.Get("cam_depth"));
+            offsetMenu.DropDownItems.Add("-3.0", null, (s, e) => { CurrentSettings.TransitionCameraOffset = -3.0f; SaveSettings(); });
+            offsetMenu.DropDownItems.Add("-4.5", null, (s, e) => { CurrentSettings.TransitionCameraOffset = -4.5f; SaveSettings(); });
+            offsetMenu.DropDownItems.Add("-6.0", null, (s, e) => { CurrentSettings.TransitionCameraOffset = -6.0f; SaveSettings(); });
+            offsetMenu.DropDownItems.Add("-8.0", null, (s, e) => { CurrentSettings.TransitionCameraOffset = -8.0f; SaveSettings(); });
+            offsetMenu.DropDownItems.Add(Loc.Get("dialog_cancel") + " / " + Loc.Get("dialog_ok") + "...", null, (s, e) => {
+                string res = ShowInputDialog(Loc.Get("prompt_depth"), Loc.Get("title_depth"), CurrentSettings.TransitionCameraOffset.ToString("0.0"));
                 if (float.TryParse(res, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float val)) {
                     CurrentSettings.TransitionCameraOffset = val;
                     SaveSettings();
@@ -2460,13 +2461,13 @@ namespace OpenDock
             transitionSettingsMenu.DropDownItems.Add(offsetMenu);
 
             // 3. Precapture Depth (How many overlays loaded)
-            var depthMenu = new ToolStripMenuItem("Overlay Yakalama Derinliği");
-            depthMenu.DropDownItems.Add("Sadece Aktif Masaüstü (0)", null, (s, e) => { CurrentSettings.TransitionOverlayPrecaptureDepth = 0; SaveSettings(); });
-            depthMenu.DropDownItems.Add("Sadece Sağ/Sol Komşular (1)", null, (s, e) => { CurrentSettings.TransitionOverlayPrecaptureDepth = 1; SaveSettings(); });
-            depthMenu.DropDownItems.Add("Çift Komşular (2)", null, (s, e) => { CurrentSettings.TransitionOverlayPrecaptureDepth = 2; SaveSettings(); });
-            depthMenu.DropDownItems.Add("Tüm Masaüstleri (99)", null, (s, e) => { CurrentSettings.TransitionOverlayPrecaptureDepth = 99; SaveSettings(); });
-            depthMenu.DropDownItems.Add("Özel Değer...", null, (s, e) => {
-                string res = ShowInputDialog("Yakalama derinliğini girin (0-99):", "Overlay Derinlik Ayarı", CurrentSettings.TransitionOverlayPrecaptureDepth.ToString());
+            var depthMenu = new ToolStripMenuItem(Loc.Get("capture_depth"));
+            depthMenu.DropDownItems.Add("0", null, (s, e) => { CurrentSettings.TransitionOverlayPrecaptureDepth = 0; SaveSettings(); });
+            depthMenu.DropDownItems.Add("1", null, (s, e) => { CurrentSettings.TransitionOverlayPrecaptureDepth = 1; SaveSettings(); });
+            depthMenu.DropDownItems.Add("2", null, (s, e) => { CurrentSettings.TransitionOverlayPrecaptureDepth = 2; SaveSettings(); });
+            depthMenu.DropDownItems.Add("99", null, (s, e) => { CurrentSettings.TransitionOverlayPrecaptureDepth = 99; SaveSettings(); });
+            depthMenu.DropDownItems.Add(Loc.Get("dialog_cancel") + " / " + Loc.Get("dialog_ok") + "...", null, (s, e) => {
+                string res = ShowInputDialog(Loc.Get("prompt_cap_depth"), Loc.Get("title_cap_depth"), CurrentSettings.TransitionOverlayPrecaptureDepth.ToString());
                 if (int.TryParse(res, out int val)) {
                     CurrentSettings.TransitionOverlayPrecaptureDepth = val;
                     SaveSettings();
@@ -2475,13 +2476,13 @@ namespace OpenDock
             transitionSettingsMenu.DropDownItems.Add(depthMenu);
 
             // 4. Deceleration (lerp factor)
-            var speedMenu = new ToolStripMenuItem("Dönüş Yumuşaklığı (Deceleration)");
-            speedMenu.DropDownItems.Add("Hızlı (0.25)", null, (s, e) => { CurrentSettings.TransitionDeceleration = 0.25f; SaveSettings(); });
-            speedMenu.DropDownItems.Add("Varsayılan (0.15)", null, (s, e) => { CurrentSettings.TransitionDeceleration = 0.15f; SaveSettings(); });
-            speedMenu.DropDownItems.Add("Yumuşak (0.10)", null, (s, e) => { CurrentSettings.TransitionDeceleration = 0.10f; SaveSettings(); });
-            speedMenu.DropDownItems.Add("Çok Yumuşak (0.05)", null, (s, e) => { CurrentSettings.TransitionDeceleration = 0.05f; SaveSettings(); });
-            speedMenu.DropDownItems.Add("Özel Değer...", null, (s, e) => {
-                string res = ShowInputDialog("Yavaşlama katsayısını girin (0.01 - 1.0, örn. 0.15):", "Dönüş Yumuşaklığı Ayarı", CurrentSettings.TransitionDeceleration.ToString("0.00"));
+            var speedMenu = new ToolStripMenuItem(Loc.Get("deceleration"));
+            speedMenu.DropDownItems.Add("0.25", null, (s, e) => { CurrentSettings.TransitionDeceleration = 0.25f; SaveSettings(); });
+            speedMenu.DropDownItems.Add("0.15", null, (s, e) => { CurrentSettings.TransitionDeceleration = 0.15f; SaveSettings(); });
+            speedMenu.DropDownItems.Add("0.10", null, (s, e) => { CurrentSettings.TransitionDeceleration = 0.10f; SaveSettings(); });
+            speedMenu.DropDownItems.Add("0.05", null, (s, e) => { CurrentSettings.TransitionDeceleration = 0.05f; SaveSettings(); });
+            speedMenu.DropDownItems.Add(Loc.Get("dialog_cancel") + " / " + Loc.Get("dialog_ok") + "...", null, (s, e) => {
+                string res = ShowInputDialog(Loc.Get("prompt_decel"), Loc.Get("title_decel"), CurrentSettings.TransitionDeceleration.ToString("0.00"));
                 if (float.TryParse(res, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float val)) {
                     CurrentSettings.TransitionDeceleration = val;
                     SaveSettings();
@@ -2490,13 +2491,13 @@ namespace OpenDock
             transitionSettingsMenu.DropDownItems.Add(speedMenu);
 
             // 5. Slice count
-            var sliceCountMenu = new ToolStripMenuItem("Performans / Dilim Sayısı");
-            sliceCountMenu.DropDownItems.Add("Düşük (30 dilim - Hızlı)", null, (s, e) => { CurrentSettings.TransitionSlicesCount = 30; SaveSettings(); });
-            sliceCountMenu.DropDownItems.Add("Varsayılan (50 dilim)", null, (s, e) => { CurrentSettings.TransitionSlicesCount = 50; SaveSettings(); });
-            sliceCountMenu.DropDownItems.Add("Yüksek (80 dilim - Detaylı)", null, (s, e) => { CurrentSettings.TransitionSlicesCount = 80; SaveSettings(); });
-            sliceCountMenu.DropDownItems.Add("Çok Yüksek (120 dilim)", null, (s, e) => { CurrentSettings.TransitionSlicesCount = 120; SaveSettings(); });
-            sliceCountMenu.DropDownItems.Add("Özel Değer...", null, (s, e) => {
-                string res = ShowInputDialog("3D dilim sayısını girin (10 - 200, örn. 50):", "Dilim Sayısı Ayarı", CurrentSettings.TransitionSlicesCount.ToString());
+            var sliceCountMenu = new ToolStripMenuItem(Loc.Get("slices_count"));
+            sliceCountMenu.DropDownItems.Add("30", null, (s, e) => { CurrentSettings.TransitionSlicesCount = 30; SaveSettings(); });
+            sliceCountMenu.DropDownItems.Add("50", null, (s, e) => { CurrentSettings.TransitionSlicesCount = 50; SaveSettings(); });
+            sliceCountMenu.DropDownItems.Add("80", null, (s, e) => { CurrentSettings.TransitionSlicesCount = 80; SaveSettings(); });
+            sliceCountMenu.DropDownItems.Add("120", null, (s, e) => { CurrentSettings.TransitionSlicesCount = 120; SaveSettings(); });
+            sliceCountMenu.DropDownItems.Add(Loc.Get("dialog_cancel") + " / " + Loc.Get("dialog_ok") + "...", null, (s, e) => {
+                string res = ShowInputDialog(Loc.Get("prompt_slices"), Loc.Get("title_slices"), CurrentSettings.TransitionSlicesCount.ToString());
                 if (int.TryParse(res, out int val)) {
                     CurrentSettings.TransitionSlicesCount = val;
                     SaveSettings();
@@ -2505,12 +2506,12 @@ namespace OpenDock
             transitionSettingsMenu.DropDownItems.Add(sliceCountMenu);
 
             // 6. Overlap padding
-            var paddingMenu = new ToolStripMenuItem("Gaps / Dilim Çakışma Payı");
-            paddingMenu.DropDownItems.Add("Sıfır (0.0)", null, (s, e) => { CurrentSettings.TransitionOverlapPadding = 0f; SaveSettings(); });
-            paddingMenu.DropDownItems.Add("Varsayılan (1.5)", null, (s, e) => { CurrentSettings.TransitionOverlapPadding = 1.5f; SaveSettings(); });
-            paddingMenu.DropDownItems.Add("Geniş (3.0)", null, (s, e) => { CurrentSettings.TransitionOverlapPadding = 3.0f; SaveSettings(); });
-            paddingMenu.DropDownItems.Add("Özel Değer...", null, (s, e) => {
-                string res = ShowInputDialog("Dilim çakışma payını girin (örn. 1.5):", "Çakışma Payı Ayarı", CurrentSettings.TransitionOverlapPadding.ToString("0.0"));
+            var paddingMenu = new ToolStripMenuItem(Loc.Get("gaps_padding"));
+            paddingMenu.DropDownItems.Add("0.0", null, (s, e) => { CurrentSettings.TransitionOverlapPadding = 0f; SaveSettings(); });
+            paddingMenu.DropDownItems.Add("1.5", null, (s, e) => { CurrentSettings.TransitionOverlapPadding = 1.5f; SaveSettings(); });
+            paddingMenu.DropDownItems.Add("3.0", null, (s, e) => { CurrentSettings.TransitionOverlapPadding = 3.0f; SaveSettings(); });
+            paddingMenu.DropDownItems.Add(Loc.Get("dialog_cancel") + " / " + Loc.Get("dialog_ok") + "...", null, (s, e) => {
+                string res = ShowInputDialog(Loc.Get("prompt_padding"), Loc.Get("title_padding"), CurrentSettings.TransitionOverlapPadding.ToString("0.0"));
                 if (float.TryParse(res, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out float val)) {
                     CurrentSettings.TransitionOverlapPadding = val;
                     SaveSettings();
@@ -2519,12 +2520,12 @@ namespace OpenDock
             transitionSettingsMenu.DropDownItems.Add(paddingMenu);
 
             // 7. Transition switch delay
-            var switchDelayMenu = new ToolStripMenuItem("Geçiş Tetikleme Gecikmesi");
-            switchDelayMenu.DropDownItems.Add("Anında (50ms)", null, (s, e) => { CurrentSettings.TransitionSwitchDelay = 50; SaveSettings(); });
-            switchDelayMenu.DropDownItems.Add("Varsayılan (100ms)", null, (s, e) => { CurrentSettings.TransitionSwitchDelay = 100; SaveSettings(); });
-            switchDelayMenu.DropDownItems.Add("Yavaş (180ms)", null, (s, e) => { CurrentSettings.TransitionSwitchDelay = 180; SaveSettings(); });
-            switchDelayMenu.DropDownItems.Add("Özel Değer...", null, (s, e) => {
-                string res = ShowInputDialog("Masaüstü geçişler arası gecikmeyi girin (ms, örn. 100):", "Geçiş Gecikmesi Ayarı", CurrentSettings.TransitionSwitchDelay.ToString());
+            var switchDelayMenu = new ToolStripMenuItem(Loc.Get("switch_delay"));
+            switchDelayMenu.DropDownItems.Add("50ms", null, (s, e) => { CurrentSettings.TransitionSwitchDelay = 50; SaveSettings(); });
+            switchDelayMenu.DropDownItems.Add("100ms", null, (s, e) => { CurrentSettings.TransitionSwitchDelay = 100; SaveSettings(); });
+            switchDelayMenu.DropDownItems.Add("180ms", null, (s, e) => { CurrentSettings.TransitionSwitchDelay = 180; SaveSettings(); });
+            switchDelayMenu.DropDownItems.Add(Loc.Get("dialog_cancel") + " / " + Loc.Get("dialog_ok") + "...", null, (s, e) => {
+                string res = ShowInputDialog(Loc.Get("prompt_delay"), Loc.Get("title_delay"), CurrentSettings.TransitionSwitchDelay.ToString());
                 if (int.TryParse(res, out int val)) {
                     CurrentSettings.TransitionSwitchDelay = Math.Max(10, Math.Min(1000, val));
                     SaveSettings();
@@ -2533,18 +2534,18 @@ namespace OpenDock
             transitionSettingsMenu.DropDownItems.Add(switchDelayMenu);
 
             // 8. Stars settings
-            var starsSettingsMenu = new ToolStripMenuItem("Arka Plan Yıldızları");
-            var showStarsItem = new ToolStripMenuItem("Yıldızları Göster") { CheckOnClick = true, Checked = CurrentSettings.TransitionShowStars };
+            var starsSettingsMenu = new ToolStripMenuItem(Loc.Get("bg_stars"));
+            var showStarsItem = new ToolStripMenuItem(Loc.Get("show_stars")) { CheckOnClick = true, Checked = CurrentSettings.TransitionShowStars };
             showStarsItem.CheckedChanged += (s, e) => { CurrentSettings.TransitionShowStars = showStarsItem.Checked; SaveSettings(); };
             starsSettingsMenu.DropDownItems.Add(showStarsItem);
 
-            var starsCountMenu = new ToolStripMenuItem("Yıldız Sayısı");
-            starsCountMenu.DropDownItems.Add("Az (10)", null, (s, e) => { CurrentSettings.TransitionStarsCount = 10; SaveSettings(); });
-            starsCountMenu.DropDownItems.Add("Varsayılan (20)", null, (s, e) => { CurrentSettings.TransitionStarsCount = 20; SaveSettings(); });
-            starsCountMenu.DropDownItems.Add("Yoğun (50)", null, (s, e) => { CurrentSettings.TransitionStarsCount = 50; SaveSettings(); });
-            starsCountMenu.DropDownItems.Add("Samanyolu (100)", null, (s, e) => { CurrentSettings.TransitionStarsCount = 100; SaveSettings(); });
-            starsCountMenu.DropDownItems.Add("Özel Değer...", null, (s, e) => {
-                string res = ShowInputDialog("Yıldız sayısını girin (0 - 500):", "Yıldız Sayısı Ayarı", CurrentSettings.TransitionStarsCount.ToString());
+            var starsCountMenu = new ToolStripMenuItem(Loc.Get("stars_count"));
+            starsCountMenu.DropDownItems.Add("10", null, (s, e) => { CurrentSettings.TransitionStarsCount = 10; SaveSettings(); });
+            starsCountMenu.DropDownItems.Add("20", null, (s, e) => { CurrentSettings.TransitionStarsCount = 20; SaveSettings(); });
+            starsCountMenu.DropDownItems.Add("50", null, (s, e) => { CurrentSettings.TransitionStarsCount = 50; SaveSettings(); });
+            starsCountMenu.DropDownItems.Add("100", null, (s, e) => { CurrentSettings.TransitionStarsCount = 100; SaveSettings(); });
+            starsCountMenu.DropDownItems.Add(Loc.Get("dialog_cancel") + " / " + Loc.Get("dialog_ok") + "...", null, (s, e) => {
+                string res = ShowInputDialog(Loc.Get("prompt_stars"), Loc.Get("title_stars"), CurrentSettings.TransitionStarsCount.ToString());
                 if (int.TryParse(res, out int val)) {
                     CurrentSettings.TransitionStarsCount = Math.Max(0, Math.Min(500, val));
                     SaveSettings();
@@ -2553,11 +2554,31 @@ namespace OpenDock
             starsSettingsMenu.DropDownItems.Add(starsCountMenu);
             transitionSettingsMenu.DropDownItems.Add(starsSettingsMenu);
 
+            // 9. Background Image Settings
+            var bgMenu = new ToolStripMenuItem(Loc.Get("bg_image"));
+            bgMenu.DropDownItems.Add(Loc.Get("choose_image"), null, (s, e) => {
+                using (var ofd = new OpenFileDialog())
+                {
+                    ofd.Filter = "Resim Dosyaları|*.png;*.jpg;*.jpeg;*.bmp;*.gif";
+                    ofd.Title = Loc.Get("bg_image");
+                    if (ofd.ShowDialog() == DialogResult.OK)
+                    {
+                        CurrentSettings.TransitionBackgroundImagePath = ofd.FileName;
+                        SaveSettings();
+                    }
+                }
+            });
+            bgMenu.DropDownItems.Add(Loc.Get("reset_gradient"), null, (s, e) => {
+                CurrentSettings.TransitionBackgroundImagePath = "";
+                SaveSettings();
+            });
+            transitionSettingsMenu.DropDownItems.Add(bgMenu);
+
             contextMenu.Items.Add(transitionSettingsMenu);
 
             contextMenu.Opening += (s, e) => SyncStartupMenuState();
             contextMenu.Items.Add("-");
-            contextMenu.Items.Add("Çıkış", null, (s, e) =>
+            contextMenu.Items.Add(Loc.Get("exit"), null, (s, e) =>
             {
                 _trayIcon.Visible = false;
                 _trayIcon.Dispose();
@@ -2584,8 +2605,8 @@ namespace OpenDock
             };
             Label textLabel = new Label() { Left = 20, Top = 20, Text = text, Width = 310, Height = 20, Font = new Font("Segoe UI", 9.5f) };
             TextBox textBox = new TextBox() { Left = 20, Top = 45, Width = 290, Text = defaultValue, Font = new Font("Segoe UI", 9.5f) };
-            Button confirmation = new Button() { Text = "Tamam", Left = 110, Width = 90, Top = 80, Height = 30, DialogResult = DialogResult.OK, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9.5f) };
-            Button cancel = new Button() { Text = "İptal", Left = 210, Width = 90, Top = 80, Height = 30, DialogResult = DialogResult.Cancel, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9.5f) };
+            Button confirmation = new Button() { Text = Loc.Get("dialog_ok"), Left = 110, Width = 90, Top = 80, Height = 30, DialogResult = DialogResult.OK, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9.5f) };
+            Button cancel = new Button() { Text = Loc.Get("dialog_cancel"), Left = 210, Width = 90, Top = 80, Height = 30, DialogResult = DialogResult.Cancel, FlatStyle = FlatStyle.Flat, Font = new Font("Segoe UI", 9.5f) };
 
             confirmation.FlatAppearance.BorderColor = Color.FromArgb(60, 255, 255, 255);
             cancel.FlatAppearance.BorderColor = Color.FromArgb(60, 255, 255, 255);
@@ -6346,9 +6367,11 @@ namespace OpenDock
             private readonly int _totalCount;
             private readonly Form1 _mainForm;
             private Bitmap? _renderTarget;
+            private Bitmap? _customBgImage;
 
             private float _angle = 0f;
             private bool _isDragging = false;
+            private bool _hasMoved = false;
             private Point _dragStartMouse;
             private float _dragStartAngle;
 
@@ -6397,6 +6420,25 @@ namespace OpenDock
                             }
                         }
                     }
+                }
+
+                // Load custom background image if configured
+                string bgPath = Form1.CurrentSettings.TransitionBackgroundImagePath;
+                if (!string.IsNullOrWhiteSpace(bgPath) && System.IO.File.Exists(bgPath))
+                {
+                    try
+                    {
+                        using (var temp = new Bitmap(bgPath))
+                        {
+                            _customBgImage = new Bitmap(Screen.PrimaryScreen!.Bounds.Width, Screen.PrimaryScreen!.Bounds.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                            using (var bgG = Graphics.FromImage(_customBgImage))
+                            {
+                                bgG.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+                                bgG.DrawImage(temp, 0, 0, _customBgImage.Width, _customBgImage.Height);
+                            }
+                        }
+                    }
+                    catch { }
                 }
 
                 this.SetStyle(ControlStyles.AllPaintingInWmPaint | ControlStyles.UserPaint | ControlStyles.OptimizedDoubleBuffer, true);
@@ -6568,11 +6610,18 @@ namespace OpenDock
 
             private void CubeTransitionForm_MouseDown(object? sender, MouseEventArgs e)
             {
-                if (_animating) return;
-
-                if (e.Button == MouseButtons.Right)
+                if (e.Button == MouseButtons.Left || e.Button == MouseButtons.Right)
                 {
+                    if (_animating)
+                    {
+                        _animTimer?.Stop();
+                        _animTimer?.Dispose();
+                        _animTimer = null;
+                        _animating = false;
+                    }
+
                     _isDragging = true;
+                    _hasMoved = false;
                     _dragStartMouse = e.Location;
                     _dragStartAngle = _angle;
                 }
@@ -6582,65 +6631,82 @@ namespace OpenDock
             {
                 if (!_isDragging) return;
 
+                int dx = Math.Abs(e.X - _dragStartMouse.X);
+                int dy = Math.Abs(e.Y - _dragStartMouse.Y);
+                if (dx > 3 || dy > 3)
+                {
+                    _hasMoved = true;
+                }
+
                 int N = _totalCount < 3 ? 4 : _totalCount;
                 float stepAngle = 360f / N;
-                int maxLeftSteps = _currentIndex;
-                int maxRightSteps = _totalCount - 1 - _currentIndex;
-
-                float minAngle = -maxRightSteps * stepAngle - 45f;
-                float maxAngle = maxLeftSteps * stepAngle + 45f;
 
                 int deltaX = e.X - _dragStartMouse.X;
                 float angleDelta = (deltaX / (float)this.Width) * 180f;
                 _angle = _dragStartAngle + angleDelta;
-
-                if (_angle < minAngle) _angle = minAngle;
-                if (_angle > maxAngle) _angle = maxAngle;
 
                 this.Invalidate();
             }
 
             private void CubeTransitionForm_MouseUp(object? sender, MouseEventArgs e)
             {
-                if (e.Button == MouseButtons.Right)
-                {
-                    _isDragging = false;
-                }
-                else if (e.Button == MouseButtons.Left)
-                {
-                    if (_animating) return;
+                if (!_isDragging) return;
+                if (e.Button != MouseButtons.Left && e.Button != MouseButtons.Right) return;
 
-                    int N = _totalCount < 3 ? 4 : _totalCount;
-                    float stepAngle = 360f / N;
-                    int maxLeftSteps = _currentIndex;
-                    int maxRightSteps = _totalCount - 1 - _currentIndex;
+                bool wasDragging = _hasMoved;
+                _isDragging = false;
 
+                int N = _totalCount < 3 ? 4 : _totalCount;
+                float stepAngle = 360f / N;
+
+                if (wasDragging)
+                {
+                    // Drag release: snap to nearest face but STAY OPEN
                     int offset = (int)Math.Round(-_angle / stepAngle);
-                    offset = Math.Max(-maxLeftSteps, Math.Min(maxRightSteps, offset));
-
                     float targetAngle = -offset * stepAngle;
-                    int targetIdx = _currentIndex + offset;
-
-                    AnimateTo(targetAngle, async () =>
+                    AnimateTo(targetAngle, null);
+                }
+                else
+                {
+                    // Regular click (no drag):
+                    // Left Click confirms selection and enters the desktop
+                    if (e.Button == MouseButtons.Left)
                     {
-                        int diff = targetIdx - _currentIndex;
-                        if (diff != 0)
+                        int offset = (int)Math.Round(-_angle / stepAngle);
+                        int targetIdx = (_currentIndex + offset) % _totalCount;
+                        if (targetIdx < 0) targetIdx += _totalCount;
+
+                        float targetAngle = -offset * stepAngle;
+                        int actualTargetIdx = targetIdx;
+
+                        AnimateTo(targetAngle, async () =>
                         {
-                            bool goRight = diff > 0;
-                            int steps = Math.Abs(diff);
-                            for (int s = 0; s < steps; s++)
+                            int diff = actualTargetIdx - _currentIndex;
+                            if (diff != 0)
                             {
-                                _mainForm.SwitchDesktopOS(goRight);
-                                await Task.Delay(Form1.CurrentSettings.TransitionSwitchDelay);
+                                bool goRight = diff > 0;
+                                int steps = Math.Abs(diff);
+                                for (int s = 0; s < steps; s++)
+                                {
+                                    _mainForm.SwitchDesktopOS(goRight);
+                                    await Task.Delay(Form1.CurrentSettings.TransitionSwitchDelay);
+                                }
                             }
-                        }
-                        this.Close();
-                    });
+                            this.Close();
+                        });
+                    }
                 }
             }
 
-            private void AnimateTo(float targetAngle, Action onComplete)
+            private void AnimateTo(float targetAngle, Action? onComplete)
             {
+                if (_animTimer != null)
+                {
+                    _animTimer.Stop();
+                    _animTimer.Dispose();
+                    _animTimer = null;
+                }
+
                 _animating = true;
                 _targetAngle = targetAngle;
                 _onAnimComplete = onComplete;
@@ -6649,23 +6715,20 @@ namespace OpenDock
                 _animTimer.Tick += (s, e) =>
                 {
                     float diff = _targetAngle - _angle;
-                    if (Math.Abs(diff) < 0.5f)
+                    if (Math.Abs(diff) < 0.1f)
                     {
                         _angle = _targetAngle;
+                        _animTimer.Stop();
+                        _animTimer.Dispose();
+                        _animTimer = null;
+                        _animating = false;
+                        this.Invalidate();
+                        _onAnimComplete?.Invoke();
                     }
                     else
                     {
                         _angle += diff * Form1.CurrentSettings.TransitionDeceleration;
-                    }
-
-                    this.Invalidate();
-
-                    if (_angle == _targetAngle)
-                    {
-                        _animTimer.Stop();
-                        _animTimer.Dispose();
-                        _animating = false;
-                        _onAnimComplete?.Invoke();
+                        this.Invalidate();
                     }
                 };
                 _animTimer.Start();
@@ -6684,9 +6747,18 @@ namespace OpenDock
                 var g = e.Graphics;
 
                 // Background
-                using (var brush = new System.Drawing.Drawing2D.LinearGradientBrush(this.ClientRectangle, Color.FromArgb(10, 10, 22), Color.FromArgb(20, 15, 30), 45f))
+                if (_customBgImage != null)
                 {
-                    g.FillRectangle(brush, this.ClientRectangle);
+                    g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                    g.DrawImage(_customBgImage, 0, 0);
+                    g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver;
+                }
+                else
+                {
+                    using (var brush = new System.Drawing.Drawing2D.LinearGradientBrush(this.ClientRectangle, Color.FromArgb(10, 10, 22), Color.FromArgb(20, 15, 30), 45f))
+                    {
+                        g.FillRectangle(brush, this.ClientRectangle);
+                    }
                 }
 
                 // Stars
@@ -6712,11 +6784,13 @@ namespace OpenDock
 
                 // Help text
                 using (var font = new Font("Segoe UI Semibold", 13f, FontStyle.Bold))
-                using (var brush = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
                 {
-                    string text = "Masaüstünü döndürmek için SAĞ TIK ile sürükleyin • Seçmek için SOL TIK • İptal için ESC";
-                    SizeF sizeText = g.MeasureString(text, font);
-                    g.DrawString(text, font, brush, (this.Width - sizeText.Width) / 2f, 40);
+                    using (var brush = new SolidBrush(Color.FromArgb(200, 255, 255, 255)))
+                    {
+                        string text = Loc.Get("help_text");
+                        SizeF sizeText = g.MeasureString(text, font);
+                        g.DrawString(text, font, brush, (this.Width - sizeText.Width) / 2f, 40);
+                    }
                 }
 
                 if (_renderTarget == null)
@@ -6808,7 +6882,7 @@ namespace OpenDock
                                 float screenX = (this.Width / 2f) + rx * (cubeH / 2f) * scale;
                                 float screenY = (this.Height / 2f) - (cubeH / 2f) * scale - 25f;
 
-                                string text = $"Masaüstü {k + 1}";
+                                string text = $"{Loc.Get("desktop")} {k + 1}";
                                 SizeF textSize = g.MeasureString(text, font);
 
                                 float pillW = textSize.Width + 24;
@@ -6905,6 +6979,7 @@ namespace OpenDock
                         }
                     }
                     _renderTarget?.Dispose();
+                    _customBgImage?.Dispose();
                     _animTimer?.Dispose();
                 }
                 base.Dispose(disposing);
