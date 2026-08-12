@@ -34,6 +34,14 @@ namespace OpenDock
         public float TransitionOverlapPadding { get; set; } = 1.5f;
         public int TransitionSwitchDelay { get; set; } = 100;
         public string TransitionBackgroundImagePath { get; set; } = "";
+        public bool TransitionOutwardFacing { get; set; } = false;
+        public bool SeparateRunningApps { get; set; } = true;
+        public bool AutoHideEnabled { get; set; } = false;
+        public bool ShowRecycleBin { get; set; } = true;
+        public bool MagnificationEnabled { get; set; } = true;
+        public int MagnifiedIconSize { get; set; } = 64;
+        public int MagnificationRange { get; set; } = 3;
+        public bool ShowMediaController { get; set; } = true;
     }
 
     public partial class Form1 : Form
@@ -52,6 +60,23 @@ namespace OpenDock
 
         [DllImport("shell32.dll", CharSet = CharSet.Auto)]
         internal static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        private static extern int SHQueryRecycleBin(string? pszRootPath, ref SHQUERYRBINFO pSHQueryRBInfo);
+
+        [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+        private static extern int SHEmptyRecycleBin(IntPtr hwnd, string? pszRootPath, uint dwFlags);
+
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
+        private struct SHQUERYRBINFO
+        {
+            public int cbSize;
+            public long i64Size;
+            public long i64NumItems;
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Auto)]
+        private static extern IntPtr ExtractIcon(IntPtr hInst, string lpszExeFileName, int nIconIndex);
 
         [DllImport("user32.dll", SetLastError = true)]
         internal static extern bool DestroyIcon(IntPtr hIcon);
@@ -378,7 +403,7 @@ namespace OpenDock
         {
             private Bitmap? _originalBitmap; // asla kltlmemi, her zaman kaliteli kaynak
             private Bitmap? _bitmap;         // o an ekranda gsterilen, leklenmi versiyon
-            private string _appName = "";
+            public string _appName = "";
             private float _scrollOffset = 0f;
 
             [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
@@ -492,19 +517,33 @@ namespace OpenDock
                 TopMost = true;
                 Size = new Size(canvasSize, canvasSize); // SABT  bundan sonra bir daha ASLA resize edilmiyor
             }
+
+            public void SetRawBitmap(Bitmap bmp, int width, int height)
+            {
+                _originalBitmap?.Dispose();
+                _originalBitmap = (Bitmap)bmp.Clone();
+                _bitmap?.Dispose();
+                _bitmap = (Bitmap)bmp.Clone();
+                Size = new Size(width, height);
+                Redraw(this.Left, this.Top);
+            }
+
             public void UpdateBounds(int x, int y, int size)
             {
                 if (_originalBitmap == null || size <= 0) return;
 
-                int indicatorSpace = _showIndicator ? 7 : 0; // Extra height for the dot below the icon
-                int windowWidth = size;
-                int windowHeight = size + indicatorSpace;
+                bool isRaw = (_originalBitmap.Width != _originalBitmap.Height);
+                int indicatorSpace = (!isRaw && _showIndicator) ? 7 : 0; // Extra height for the dot below the icon
+                int windowWidth = isRaw ? _originalBitmap.Width : size;
+                int windowHeight = (isRaw ? _originalBitmap.Height : size) + indicatorSpace;
+                int drawWidth = isRaw ? _originalBitmap.Width : size;
+                int drawHeight = isRaw ? _originalBitmap.Height : size;
                 int drawX = 0;
                 int drawY = 0;
                 int windowX = x;
                 int windowY = y;
 
-                bool showText = (size >= 48 && !string.IsNullOrEmpty(_appName));
+                bool showText = (!isRaw && size >= 48 && !string.IsNullOrEmpty(_appName));
 
                 if (showText)
                 {
@@ -529,10 +568,10 @@ namespace OpenDock
                     g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
                     // Draw the icon
-                    g.DrawImage(_originalBitmap, drawX, drawY, size, size);
+                    g.DrawImage(_originalBitmap, drawX, drawY, drawWidth, drawHeight);
 
                     // Draw indicator line below icon for open applications
-                    if (_showIndicator)
+                    if (_showIndicator && !isRaw)
                     {
                         float dotWidth = Math.Max(8f, size * 0.35f);
                         float dotHeight = 3f;
@@ -790,6 +829,8 @@ namespace OpenDock
             public int BounceTicks { get; set; } = 0;
             public double EnterProgress { get; set; } = 1.0;
             public bool IsTaskManagerPlaceholder { get; set; } = false;
+            public double TargetMagnification { get; set; } = 0.0;
+            public bool IsRecycleBin { get; set; } = false;
         }
 
         private class PinnedDockApp
@@ -818,6 +859,7 @@ namespace OpenDock
         private bool _isUpdatingStartupMenuState;
         private int _separatorX = -1;
         private int _separatorY = -1;
+        private int _appsSeparatorOffset = -1;
         private bool _dockHiddenByGameMode = false;
         private static readonly string OrderFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dock_order.txt");
         private static readonly string PinnedAppsFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dock_pins.json");
@@ -830,6 +872,31 @@ namespace OpenDock
         private const float Gravity = 0.8f;
         private const float BounceSpring = -0.7f;
         private ContextMenuStrip _dockBgContextMenu = null!;
+        private bool _autoHideActive = false;
+        private float _autoHideProgress = 0f;
+        private System.Windows.Forms.Timer _autoHideTimer = null!;
+        private Point _dockVisibleLocation;
+        private Point _dockHiddenLocation;
+        private DateTime _lastCursorInDock = DateTime.Now;
+        private const int AutoHideEdgeThreshold = 5;
+        private const int AutoHideLeaveThreshold = 80;
+        private const int AutoHideDelayMs = 400;
+
+        private bool _isDraggingMedia = false;
+        private Point _mediaDragStartMouse;
+        private Point _mediaDragStartLocation;
+        private Point? _mediaCustomLocation = null;
+
+        // Media Controller
+        private const byte VK_MEDIA_PLAY_PAUSE = 0xB3;
+        private const byte VK_MEDIA_NEXT_TRACK = 0xB0;
+        private const byte VK_MEDIA_PREV_TRACK = 0xB1;
+        private System.Windows.Forms.Timer? _mediaCheckTimer;
+        private string _currentMediaTitle = "";
+        private string _currentMediaArtist = "";
+        private bool _isMediaPlaying = false;
+        private bool _isMediaPlayingActive = false;
+        private IconWindow? _mediaWidget;
 
         // Fareyi her ikonun SABT orijinal (bymeden nceki) alanna gre kontrol eder.
         // Bylece byyen/kayan pencere snrlar hover durumunu etkilemez, titreme biter.
@@ -862,6 +929,20 @@ namespace OpenDock
                         closestItem = item;
                     }
                 }
+            }
+
+            // --- Magnification wave calculation ---
+            if (CurrentSettings.MagnificationEnabled)
+            {
+                foreach (var item in _dockItems)
+                {
+                    item.TargetMagnification = (item == closestItem) ? 1.0 : 0.0;
+                }
+            }
+            else
+            {
+                foreach (var item in _dockItems)
+                    item.TargetMagnification = 0.0;
             }
 
             foreach (var item in _dockItems)
@@ -943,6 +1024,8 @@ namespace OpenDock
             }
 
             ApplyDockRegion();
+            if (_autoHideTimer != null)
+                UpdateAutoHidePositions();
         }
 
         private void ChangeDockPosition(string position)
@@ -976,6 +1059,72 @@ namespace OpenDock
             Region = new Region(RoundedRect(new Rectangle(0, 0, Width - 1, Height - 1), DockCornerRadius));
         }
 
+        private string? ResolveShortcut(string lnkPath)
+        {
+            try
+            {
+                Type? shellType = Type.GetTypeFromProgID("WScript.Shell");
+                if (shellType == null) return null;
+                dynamic? shell = Activator.CreateInstance(shellType);
+                if (shell == null) return null;
+                dynamic shortcut = shell.CreateShortcut(lnkPath);
+                string targetPath = shortcut.TargetPath;
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(shortcut);
+                System.Runtime.InteropServices.Marshal.ReleaseComObject(shell);
+                return string.IsNullOrWhiteSpace(targetPath) ? null : targetPath;
+            }
+            catch { return null; }
+        }
+
+        private void Form1_DragEnter(object? sender, DragEventArgs e)
+        {
+            if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+            {
+                string[]? files = e.Data.GetData(DataFormats.FileDrop) as string[];
+                if (files != null && files.Length > 0)
+                {
+                    string file = files[0];
+                    string ext = System.IO.Path.GetExtension(file).ToLower();
+                    if (ext == ".exe" || ext == ".lnk")
+                    {
+                        e.Effect = DragDropEffects.Copy;
+                        return;
+                    }
+                }
+            }
+            e.Effect = DragDropEffects.None;
+        }
+
+        private void Form1_DragDrop(object? sender, DragEventArgs e)
+        {
+            if (e.Data?.GetDataPresent(DataFormats.FileDrop) != true) return;
+            string[]? files = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (files == null || files.Length == 0) return;
+
+            string file = files[0];
+            string ext = System.IO.Path.GetExtension(file).ToLower();
+            string? exePath = null;
+            string displayName;
+
+            if (ext == ".lnk")
+            {
+                exePath = ResolveShortcut(file);
+                displayName = System.IO.Path.GetFileNameWithoutExtension(file);
+            }
+            else if (ext == ".exe")
+            {
+                exePath = file;
+                displayName = System.IO.Path.GetFileNameWithoutExtension(file);
+            }
+            else return;
+
+            if (string.IsNullOrWhiteSpace(exePath) || !System.IO.File.Exists(exePath)) return;
+            if (IsPinnedApp(exePath)) return;
+
+            PinApp(displayName, exePath);
+            RefreshDockIcons();
+        }
+
         private void Form1_Load(object sender, EventArgs e)
         {
             this.SuspendLayout();
@@ -985,6 +1134,10 @@ namespace OpenDock
             LoadDockOrder();
             RefreshDockIcons();
             EnableBlur();
+
+            this.AllowDrop = true;
+            this.DragEnter += Form1_DragEnter;
+            this.DragDrop += Form1_DragDrop;
 
             _hoverCheckTimer = new System.Windows.Forms.Timer { Interval = 20 };
             _hoverCheckTimer.Tick += (s, e) => CheckHoverStates();
@@ -996,6 +1149,8 @@ namespace OpenDock
 
             // Initialize and show clock if setting is enabled
             UpdateClockVisibility();
+            InitAutoHide();
+            InitMediaController();
 
             // Initialize Right-Click context menu for the dock background
             _dockBgContextMenu = new ContextMenuStrip
@@ -1133,7 +1288,6 @@ namespace OpenDock
             {
                 SaveDockOrder();
             }
-
             var dockEntries = new List<DockEntryInfo>();
             var entryMap = new Dictionary<string, DockEntryInfo>(StringComparer.OrdinalIgnoreCase);
 
@@ -1149,17 +1303,20 @@ namespace OpenDock
                     if (string.IsNullOrWhiteSpace(path) || !IsValidExecutablePath(path))
                         continue;
 
-                    string appKey = NormalizeAppKey(path);
-                    if (string.IsNullOrWhiteSpace(appKey))
+                    string baseAppKey = NormalizeAppKey(path);
+                    if (string.IsNullOrWhiteSpace(baseAppKey))
                         continue;
-
-                    string displayName = "";
-                    try
+                    string appKey = baseAppKey;
+                    string displayName = GetWindowTitle(hwnd);
+                    if (string.IsNullOrWhiteSpace(displayName))
                     {
-                        var vi = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
-                        displayName = vi.FileDescription ?? "";
+                        try
+                        {
+                            var vi = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
+                            displayName = vi.FileDescription ?? "";
+                        }
+                        catch { }
                     }
-                    catch { }
 
                     if (string.IsNullOrWhiteSpace(displayName))
                     {
@@ -1276,8 +1433,31 @@ namespace OpenDock
                 SaveDockOrder();
             }
 
-            // Sort all dockEntries according to their index in the saved order list (prevents icons from shifting around when opened/closed)
-            dockEntries.Sort((x, y) =>
+            // Separate into pinned and running unpinned entries
+            var pinnedEntries = new List<DockEntryInfo>();
+            var runningUnpinnedEntries = new List<DockEntryInfo>();
+
+            foreach (var entry in dockEntries)
+            {
+                if (!CurrentSettings.SeparateRunningApps)
+                {
+                    pinnedEntries.Add(entry);
+                }
+                else
+                {
+                    if (entry.IsPinned)
+                    {
+                        pinnedEntries.Add(entry);
+                    }
+                    else if (entry.IsOpen)
+                    {
+                        runningUnpinnedEntries.Add(entry);
+                    }
+                }
+            }
+
+            // Sort pinned entries according to saved order
+            pinnedEntries.Sort((x, y) =>
             {
                 string procX = GetProcessNameFromPath(x.ExePath);
                 string procY = GetProcessNameFromPath(y.ExePath);
@@ -1291,10 +1471,41 @@ namespace OpenDock
                 return idxX.CompareTo(idxY);
             });
 
+            // Sort running unpinned entries according to saved order or name
+            runningUnpinnedEntries.Sort((x, y) =>
+            {
+                string procX = GetProcessNameFromPath(x.ExePath);
+                string procY = GetProcessNameFromPath(y.ExePath);
+
+                int idxX = _savedOrder.FindIndex(name => name.Equals(procX, StringComparison.OrdinalIgnoreCase));
+                int idxY = _savedOrder.FindIndex(name => name.Equals(procY, StringComparison.OrdinalIgnoreCase));
+
+                if (idxX == -1) idxX = int.MaxValue;
+                if (idxY == -1) idxY = int.MaxValue;
+
+                return idxX.CompareTo(idxY);
+            });
+
+            var sortedEntries = new List<DockEntryInfo>();
+            sortedEntries.AddRange(pinnedEntries);
+            sortedEntries.AddRange(runningUnpinnedEntries);
+
             // Create dock items in the sorted order
             int startOffset = 25;
-            foreach (var entry in dockEntries)
+            _appsSeparatorOffset = -1;
+
+            int lastPinnedCount = pinnedEntries.Count;
+
+            for (int currentIdx = 0; currentIdx < sortedEntries.Count; currentIdx++)
             {
+                var entry = sortedEntries[currentIdx];
+                if (currentIdx == lastPinnedCount && lastPinnedCount > 0 && runningUnpinnedEntries.Count > 0)
+                {
+                    startOffset += 5;
+                    _appsSeparatorOffset = startOffset;
+                    startOffset += 15;
+                }
+
                 try
                 {
                     Icon? icon = GetHighQualityIcon(entry.ExePath);
@@ -1347,6 +1558,12 @@ namespace OpenDock
                         if (e.Button != MouseButtons.Left)
                             return;
 
+                        if (animData.IsRecycleBin)
+                        {
+                            Process.Start(new ProcessStartInfo("shell:RecycleBinFolder") { UseShellExecute = true });
+                            return;
+                        }
+
                         if (animData.IsOpen)
                         {
                             var openWindows = GetOpenWindowsForApp(animData);
@@ -1385,6 +1602,62 @@ namespace OpenDock
                 {
                     continue;
                 }
+            }
+
+            // Add Recycle Bin widget at the end
+            if (CurrentSettings.ShowRecycleBin)
+            {
+                startOffset += 10; // Small gap before recycle bin
+
+                Point rbLocation;
+                if (isVertical)
+                    rbLocation = new Point(this.Left + defaultOffset, this.Top + startOffset);
+                else
+                    rbLocation = new Point(this.Left + startOffset, this.Top + defaultOffset);
+
+                var rbIconWindow = new IconWindow(MaxIconSize);
+                var rbIcon = GetRecycleBinIcon();
+                rbIconWindow.SetIconImage(rbIcon.ToBitmap(), baseSize, IsRecycleBinEmpty() ? "Çöp Kutusu" : "Çöp Kutusu (Dolu)");
+
+                var rbData = new DockItemData
+                {
+                    WindowHandle = IntPtr.Zero,
+                    OriginalLocation = rbLocation,
+                    OriginalSize = new Size(baseSize, baseSize),
+                    AppKey = "__recycle_bin__",
+                    DisplayName = "Çöp Kutusu",
+                    ExePath = "",
+                    IsPinned = false,
+                    IsRecycleBin = true,
+                    Owner = rbIconWindow,
+                    AnimTimer = new System.Windows.Forms.Timer { Interval = 15 }
+                };
+
+                rbData.AnimTimer.Tick += (s2, e2) => UpdateAnimation(rbData);
+
+                rbIconWindow.Cursor = Cursors.Hand;
+                rbIconWindow.MouseUp += (s, e) =>
+                {
+                    if (e.Button == MouseButtons.Right)
+                    {
+                        BuildDockItemContextMenu(rbData).Show(rbIconWindow, e.Location);
+                        return;
+                    }
+                    if (e.Button == MouseButtons.Left)
+                    {
+                        if (rbData.IsRecycleBin)
+                        {
+                            Process.Start(new ProcessStartInfo("shell:RecycleBinFolder") { UseShellExecute = true });
+                            return;
+                        }
+                    }
+                };
+
+                rbIconWindow.Show(this);
+                rbIconWindow.UpdateBounds(rbLocation.X, rbLocation.Y, baseSize);
+                _dockItems.Add(rbData);
+
+                startOffset += baseSize + 15;
             }
 
             // Draw a separator line and place the Windows button and Task View button at the very bottom/right of the dock
@@ -1781,6 +2054,46 @@ namespace OpenDock
             catch { }
         }
 
+        private bool IsRecycleBinEmpty()
+        {
+            try
+            {
+                var info = new SHQUERYRBINFO();
+                info.cbSize = System.Runtime.InteropServices.Marshal.SizeOf(typeof(SHQUERYRBINFO));
+                SHQueryRecycleBin(null, ref info);
+                return info.i64NumItems == 0;
+            }
+            catch { return true; }
+        }
+
+        private Icon GetRecycleBinIcon()
+        {
+            bool empty = IsRecycleBinEmpty();
+            // shell32.dll icon index: 31 = empty, 32 = full
+            int iconIndex = empty ? 31 : 32;
+            IntPtr hIcon = ExtractIcon(IntPtr.Zero, "shell32.dll", iconIndex);
+            if (hIcon != IntPtr.Zero)
+            {
+                Icon icon = (Icon)Icon.FromHandle(hIcon).Clone();
+                DestroyIcon(hIcon);
+                return icon;
+            }
+            return SystemIcons.Application;
+        }
+
+        private void EmptyRecycleBinAction()
+        {
+            try
+            {
+                const uint SHERB_NOCONFIRMATION = 0x00000001;
+                const uint SHERB_NOPROGRESSUI = 0x00000002;
+                const uint SHERB_NOSOUND = 0x00000004;
+                SHEmptyRecycleBin(this.Handle, null, SHERB_NOCONFIRMATION | SHERB_NOPROGRESSUI | SHERB_NOSOUND);
+                RefreshDockIcons();
+            }
+            catch { }
+        }
+
         private bool IsPinnedApp(string exePath)
         {
             string key = NormalizeAppKey(exePath);
@@ -1838,6 +2151,22 @@ namespace OpenDock
 
         private ContextMenuStrip BuildDockItemContextMenu(DockItemData data)
         {
+            if (data.IsRecycleBin)
+            {
+                var rbMenu = new ContextMenuStrip
+                {
+                    Renderer = new ModernTrayMenuRenderer(),
+                    BackColor = Color.FromArgb(110, 12, 12, 14),
+                    ForeColor = Color.FromArgb(246, 247, 249),
+                    Font = new Font("Segoe UI", 9.5f)
+                };
+                rbMenu.Items.Add("Çöp Kutusunu Aç", null, (s3, e3) =>
+                    Process.Start(new ProcessStartInfo("shell:RecycleBinFolder") { UseShellExecute = true }));
+                rbMenu.Items.Add("Çöp Kutusunu Boşalt", null, (s3, e3) => EmptyRecycleBinAction());
+                SetupMenuBlur(rbMenu);
+                return rbMenu;
+            }
+
             var menu = new ContextMenuStrip
             {
                 ShowImageMargin = false
@@ -1899,7 +2228,6 @@ namespace OpenDock
 
             return menu;
         }
-
         private void CheckForWindowChanges()
         {
             var currentHandles = new List<IntPtr>();
@@ -1966,6 +2294,79 @@ namespace OpenDock
             {
                 RefreshDockIcons();
             }
+            else
+            {
+                // Update titles dynamically for existing windows without rebuilding the dock
+                foreach (var item in _dockItems)
+                {
+                    if (item.WindowHandle != IntPtr.Zero)
+                    {
+                        string currentTitle = GetWindowTitle(item.WindowHandle);
+                        if (string.IsNullOrWhiteSpace(currentTitle))
+                        {
+                            string path = item.ExePath;
+                            string procName = GetProcessNameFromPath(path);
+                            string fallbackTitle = "";
+                            try
+                            {
+                                var vi = System.Diagnostics.FileVersionInfo.GetVersionInfo(path);
+                                fallbackTitle = vi.FileDescription ?? "";
+                            }
+                            catch { }
+                            if (string.IsNullOrWhiteSpace(fallbackTitle))
+                            {
+                                fallbackTitle = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(procName.ToLower());
+                            }
+                            currentTitle = fallbackTitle;
+                        }
+
+                        if (currentTitle != item.DisplayName)
+                        {
+                            item.DisplayName = currentTitle;
+                            item.Owner._appName = currentTitle;
+
+                            // Repaint the window to reflect the title change smoothly
+                            int targetSize = item.OriginalSize.Width;
+                            if (item.CurrentProgress > 0.0)
+                            {
+                                int minSize = item.OriginalSize.Width;
+                                int maxSize = 48;
+                                targetSize = minSize + (int)((maxSize - minSize) * item.CurrentProgress);
+                            }
+                            targetSize = (int)(targetSize * item.EnterProgress);
+
+                            // Calculate target location based on progress (like in UpdateAnimation)
+                            int currentX = item.OriginalLocation.X;
+                            int currentY = item.OriginalLocation.Y;
+                            int sizeDiff = targetSize - item.OriginalSize.Width;
+                            int maxYukseklik = 24;
+                            string pos = CurrentSettings.DockPosition ?? "Bottom";
+                            bool isVertical = pos.Equals("Left", StringComparison.OrdinalIgnoreCase) ||
+                                              pos.Equals("Right", StringComparison.OrdinalIgnoreCase);
+
+                            if (isVertical)
+                            {
+                                currentY = item.OriginalLocation.Y - sizeDiff / 2;
+                                if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
+                                    currentX = item.OriginalLocation.X + (int)(maxYukseklik * item.CurrentProgress);
+                                else
+                                    currentX = item.OriginalLocation.X - (int)(maxYukseklik * item.CurrentProgress) - sizeDiff;
+                            }
+                            else
+                            {
+                                currentX = item.OriginalLocation.X - sizeDiff / 2;
+                                if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
+                                    currentY = item.OriginalLocation.Y + (int)(maxYukseklik * item.CurrentProgress);
+                                else
+                                    currentY = item.OriginalLocation.Y - (int)(maxYukseklik * item.CurrentProgress);
+                            }
+
+                            // Trigger redraw
+                            item.Owner.UpdateBounds(currentX, currentY, targetSize);
+                        }
+                    }
+                }
+            }
         }
 
         // Animasyon Hesaplama Motoru (Delta Zamanlı Geçiş)
@@ -2002,6 +2403,13 @@ namespace OpenDock
             int minSize = data.OriginalSize.Width;
             int maxSize = 48;
             int currentSize = minSize + (int)((maxSize - minSize) * data.CurrentProgress);
+
+            // Apply magnification wave
+            if (CurrentSettings.MagnificationEnabled && data.TargetMagnification > 0.001)
+            {
+                int magBoost = (int)((CurrentSettings.MagnifiedIconSize - currentSize) * data.TargetMagnification);
+                currentSize = Math.Min(currentSize + magBoost, CurrentSettings.MagnifiedIconSize);
+            }
 
             // Apply EnterProgress scale
             currentSize = (int)(currentSize * data.EnterProgress);
@@ -2091,6 +2499,7 @@ namespace OpenDock
                     currentY += (int)data.BounceY;
                 }
             }
+
 
             data.Owner.UpdateBounds(currentX, currentY, currentSize);
         }
@@ -2259,6 +2668,13 @@ namespace OpenDock
                         g.DrawLine(separatorPen, 10, _separatorY, Width - 10, _separatorY);
                     }
                 }
+                if (_appsSeparatorOffset > 0)
+                {
+                    using (var separatorPen = new Pen(Color.FromArgb(60, 255, 255, 255), 1f))
+                    {
+                        g.DrawLine(separatorPen, 10, _appsSeparatorOffset, Width - 10, _appsSeparatorOffset);
+                    }
+                }
             }
             else
             {
@@ -2267,6 +2683,13 @@ namespace OpenDock
                     using (var separatorPen = new Pen(Color.FromArgb(60, 255, 255, 255), 1f))
                     {
                         g.DrawLine(separatorPen, _separatorX, 10, _separatorX, Height - 10);
+                    }
+                }
+                if (_appsSeparatorOffset > 0)
+                {
+                    using (var separatorPen = new Pen(Color.FromArgb(60, 255, 255, 255), 1f))
+                    {
+                        g.DrawLine(separatorPen, _appsSeparatorOffset, 10, _appsSeparatorOffset, Height - 10);
                     }
                 }
             }
@@ -2282,7 +2705,7 @@ namespace OpenDock
             {
                 Renderer = new ModernTrayMenuRenderer(),
                 ShowImageMargin = true,
-                BackColor = Color.FromArgb(32, 32, 34),
+                BackColor = Color.FromArgb(110, 12, 12, 14),
                 ForeColor = Color.FromArgb(246, 247, 249),
                 Font = new Font("Segoe UI", 9.5f)
             };
@@ -2382,6 +2805,32 @@ namespace OpenDock
             };
             appearanceMenu.DropDownItems.Add(showClockMenuItem);
 
+            var separateRunningAppsMenuItem = new ToolStripMenuItem(Loc.Get("separate_running_apps"))
+            {
+                CheckOnClick = true,
+                Checked = CurrentSettings.SeparateRunningApps
+            };
+            separateRunningAppsMenuItem.CheckedChanged += (s, e) =>
+            {
+                CurrentSettings.SeparateRunningApps = separateRunningAppsMenuItem.Checked;
+                SaveSettings();
+                RefreshDockIcons();
+            };
+            appearanceMenu.DropDownItems.Add(separateRunningAppsMenuItem);
+
+            var showMediaMenuItem = new ToolStripMenuItem(Loc.Get("show_media_controller"))
+            {
+                CheckOnClick = true,
+                Checked = CurrentSettings.ShowMediaController
+            };
+            showMediaMenuItem.CheckedChanged += (s, e) =>
+            {
+                CurrentSettings.ShowMediaController = showMediaMenuItem.Checked;
+                SaveSettings();
+                DetectMediaPlayer(); // instantly shows/hides the widget based on the new setting
+            };
+            appearanceMenu.DropDownItems.Add(showMediaMenuItem);
+
             appearanceMenu.DropDownItems.Add(Loc.Get("edit_css"), null, (s, e) =>
             {
                 try
@@ -2427,6 +2876,32 @@ namespace OpenDock
                 CheckGameModeVisibility();
             };
             contextMenu.Items.Add(gameModeMenuItem);
+
+            var autoHideMenuItem = new ToolStripMenuItem(Loc.Get("auto_hide"))
+            {
+                CheckOnClick = true,
+                Checked = CurrentSettings.AutoHideEnabled
+            };
+            autoHideMenuItem.CheckedChanged += (s, e) =>
+            {
+                CurrentSettings.AutoHideEnabled = autoHideMenuItem.Checked;
+                SaveSettings();
+                if (autoHideMenuItem.Checked)
+                {
+                    UpdateAutoHidePositions();
+                    _autoHideTimer?.Start();
+                }
+                else
+                {
+                    _autoHideTimer?.Stop();
+                    _autoHideProgress = 0f;
+                    _autoHideActive = false;
+                    this.Location = _dockVisibleLocation;
+                    SetDockVisibility(true);
+                    RefreshDockIcons();
+                }
+            };
+            contextMenu.Items.Add(autoHideMenuItem);
 
             var transitionSettingsMenu = new ToolStripMenuItem(Loc.Get("trans_settings"));
 
@@ -2574,6 +3049,14 @@ namespace OpenDock
             });
             transitionSettingsMenu.DropDownItems.Add(bgMenu);
 
+            // 10. Outward Facing (Convex) Settings
+            var outwardItem = new ToolStripMenuItem(Loc.Get("trans_outward")) { CheckOnClick = true, Checked = CurrentSettings.TransitionOutwardFacing };
+            outwardItem.CheckedChanged += (s, e) => {
+                CurrentSettings.TransitionOutwardFacing = outwardItem.Checked;
+                SaveSettings();
+            };
+            transitionSettingsMenu.DropDownItems.Add(outwardItem);
+
             contextMenu.Items.Add(transitionSettingsMenu);
 
             contextMenu.Opening += (s, e) => SyncStartupMenuState();
@@ -2585,8 +3068,68 @@ namespace OpenDock
                 Application.Exit();
             });
 
+            SetupMenuBlur(contextMenu);
+
+            _trayIcon.MouseClick += (s, e) =>
+            {
+                if (e.Button == MouseButtons.Left)
+                {
+                    bool isVisible = this.Visible;
+                    SetDockVisibility(!isVisible);
+                }
+            };
+
             _trayIcon.ContextMenuStrip = contextMenu;
             _trayIcon.Visible = true;
+        }
+
+        private void SetupMenuBlur(ToolStripDropDown dropDown)
+        {
+            dropDown.DropShadowEnabled = false;
+            dropDown.Opened += (s, e) =>
+            {
+                ApplyAcrylicToMenu(dropDown.Handle);
+                dropDown.Region = new Region(RoundedRect(new Rectangle(0, 0, dropDown.Width, dropDown.Height), 8));
+            };
+
+            // Recurse into sub-items to register blur for nested dropdowns
+            foreach (ToolStripItem item in dropDown.Items)
+            {
+                if (item is ToolStripMenuItem menuItem)
+                {
+                    SetupMenuBlur(menuItem.DropDown);
+                }
+            }
+        }
+
+        private void ApplyAcrylicToMenu(IntPtr menuHwnd)
+        {
+            const int GWL_EXSTYLE = -20;
+            const int WS_EX_LAYERED = 0x80000;
+            IntPtr exStyle = GetWindowLong(menuHwnd, GWL_EXSTYLE);
+            SetWindowLong(menuHwnd, GWL_EXSTYLE, new IntPtr(exStyle.ToInt32() | WS_EX_LAYERED));
+
+            int cornerPref = 2; // DWMWCP_ROUND (rounds windows on Windows 11)
+            DwmSetWindowAttribute(menuHwnd, 33, ref cornerPref, sizeof(int));
+
+            var accent = new AccentPolicy
+            {
+                AccentState = AccentState.ACCENT_ENABLE_ACRYLICBLURBEHIND,
+                GradientColor = 0x60101012
+            };
+            var accentStructSize = Marshal.SizeOf(accent);
+            var accentPtr = Marshal.AllocHGlobal(accentStructSize);
+            Marshal.StructureToPtr(accent, accentPtr, false);
+
+            var data = new WindowCompositionAttributeData
+            {
+                Attribute = WindowCompositionAttribute.WCA_ACCENT_POLICY,
+                SizeOfData = accentStructSize,
+                Data = accentPtr
+            };
+
+            SetWindowCompositionAttribute(menuHwnd, ref data);
+            Marshal.FreeHGlobal(accentPtr);
         }
 
         private static string ShowInputDialog(string text, string caption, string defaultValue)
@@ -2630,38 +3173,141 @@ namespace OpenDock
             {
             }
 
+            private static System.Drawing.Drawing2D.GraphicsPath CreateRoundedRect(Rectangle bounds, int radius)
+            {
+                var path = new System.Drawing.Drawing2D.GraphicsPath();
+                int d = radius * 2;
+                path.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
+                path.AddArc(bounds.Right - d, bounds.Y, d, d, 270, 90);
+                path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+                path.AddArc(bounds.X, bounds.Bottom - d, d, d, 90, 90);
+                path.CloseFigure();
+                return path;
+            }
+
+            protected override void OnRenderImageMargin(ToolStripRenderEventArgs e)
+            {
+                // Prevent professional background or borders from drawing in the image column
+            }
+
+            protected override void OnRenderToolStripBackground(ToolStripRenderEventArgs e)
+            {
+                var g = e.Graphics;
+                var rect = new Rectangle(Point.Empty, e.ToolStrip.Size);
+
+                g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                using (var brush = new SolidBrush(Color.FromArgb(110, 12, 12, 14)))
+                {
+                    g.FillRectangle(brush, rect);
+                }
+                g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver;
+            }
+
             protected override void OnRenderMenuItemBackground(ToolStripItemRenderEventArgs e)
             {
                 var rect = new Rectangle(Point.Empty, e.Item.Size);
                 if (e.Item.Selected)
                 {
-                    using var brush = new SolidBrush(Color.FromArgb(58, 58, 62));
+                    Color bg = Color.FromArgb(200, 58, 58, 62);
+                    using var brush = new SolidBrush(bg);
                     e.Graphics.FillRectangle(brush, rect);
-                    return;
                 }
+                // If not selected, let the acrylic blur behind stay transparent!
+            }
 
-                using var bgBrush = new SolidBrush(Color.FromArgb(32, 32, 34));
-                e.Graphics.FillRectangle(bgBrush, rect);
+            protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+            {
+                var g = e.Graphics;
+                Color textColor = Color.White;
+
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+                using (var brush = new SolidBrush(textColor))
+                using (var sf = new StringFormat())
+                {
+                    sf.LineAlignment = StringAlignment.Center;
+                    sf.FormatFlags |= StringFormatFlags.NoWrap;
+                    sf.HotkeyPrefix = System.Drawing.Text.HotkeyPrefix.Show;
+
+                    if ((e.TextFormat & TextFormatFlags.Right) != 0)
+                        sf.Alignment = StringAlignment.Far;
+                    else if ((e.TextFormat & TextFormatFlags.HorizontalCenter) != 0)
+                        sf.Alignment = StringAlignment.Center;
+                    else
+                        sf.Alignment = StringAlignment.Near;
+
+                    var rect = e.TextRectangle;
+                    // Slightly shift text to vertical center for pixel-perfect alignment
+                    rect.Y += 1;
+
+                    g.DrawString(e.Text, e.TextFont ?? e.Item.Font, brush, rect, sf);
+                }
             }
 
             protected override void OnRenderSeparator(ToolStripSeparatorRenderEventArgs e)
             {
                 var y = e.Item.Height / 2;
-                using var pen = new Pen(Color.FromArgb(70, 255, 255, 255), 1f);
+                using var pen = new Pen(Color.FromArgb(40, 255, 255, 255), 1f);
                 e.Graphics.DrawLine(pen, 8, y, e.Item.Width - 8, y);
+            }
+
+            protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+                var rect = e.ImageRectangle;
+                int size = 14;
+                int x = rect.X + (rect.Width - size) / 2;
+                int y = rect.Y + (rect.Height - size) / 2;
+                var boxRect = new Rectangle(x, y, size, size);
+
+                // Sleek, semi-transparent checkbox background with rounded corners
+                using (var path = CreateRoundedRect(boxRect, 3))
+                {
+                    using (var fill = new SolidBrush(Color.FromArgb(40, 255, 255, 255)))
+                    {
+                        g.FillPath(fill, path);
+                    }
+                    using (var pen = new Pen(Color.FromArgb(160, 255, 255, 255), 1f))
+                    {
+                        g.DrawPath(pen, path);
+                    }
+                }
+
+                // Smooth white checkmark symbol
+                using (var checkPen = new Pen(Color.White, 2f))
+                {
+                    checkPen.StartCap = System.Drawing.Drawing2D.LineCap.Round;
+                    checkPen.EndCap = System.Drawing.Drawing2D.LineCap.Round;
+                    checkPen.LineJoin = System.Drawing.Drawing2D.LineJoin.Round;
+
+                    g.DrawLine(checkPen, x + 3, y + 7, x + 6, y + 10);
+                    g.DrawLine(checkPen, x + 6, y + 10, x + 11, y + 4);
+                }
+            }
+
+            protected override void OnRenderToolStripBorder(ToolStripRenderEventArgs e)
+            {
+                var g = e.Graphics;
+                var rect = new Rectangle(Point.Empty, e.ToolStrip.Size);
+                using (var pen = new Pen(Color.FromArgb(40, 255, 255, 255), 1f))
+                {
+                    g.DrawRectangle(pen, 0, 0, rect.Width - 1, rect.Height - 1);
+                }
             }
         }
 
         private sealed class ModernTrayColorTable : ProfessionalColorTable
         {
-            public override Color ToolStripDropDownBackground => Color.FromArgb(32, 32, 34);
-            public override Color ImageMarginGradientBegin => Color.FromArgb(32, 32, 34);
-            public override Color ImageMarginGradientMiddle => Color.FromArgb(32, 32, 34);
-            public override Color ImageMarginGradientEnd => Color.FromArgb(32, 32, 34);
-            public override Color MenuItemSelected => Color.FromArgb(58, 58, 62);
-            public override Color MenuItemBorder => Color.FromArgb(82, 82, 88);
-            public override Color SeparatorDark => Color.FromArgb(70, 255, 255, 255);
-            public override Color SeparatorLight => Color.FromArgb(70, 255, 255, 255);
+            public override Color ToolStripDropDownBackground => Color.FromArgb(110, 12, 12, 14);
+            public override Color ImageMarginGradientBegin => Color.FromArgb(110, 12, 12, 14);
+            public override Color ImageMarginGradientMiddle => Color.FromArgb(110, 12, 12, 14);
+            public override Color ImageMarginGradientEnd => Color.FromArgb(110, 12, 12, 14);
+            public override Color MenuItemSelected => Color.FromArgb(200, 58, 58, 62);
+            public override Color MenuItemBorder => Color.Transparent;
+            public override Color SeparatorDark => Color.FromArgb(40, 255, 255, 255);
+            public override Color SeparatorLight => Color.FromArgb(40, 255, 255, 255);
         }
 
         private void SyncStartupMenuState()
@@ -2757,14 +3403,398 @@ namespace OpenDock
             }
         }
 
+        private void InitAutoHide()
+        {
+            UpdateAutoHidePositions();
+            _autoHideTimer = new System.Windows.Forms.Timer { Interval = 16 };
+            _autoHideTimer.Tick += (s, e) => AutoHideTimerTick();
+            if (CurrentSettings.AutoHideEnabled)
+                _autoHideTimer.Start();
+        }
+
+        private void InitMediaController()
+        {
+            if (!CurrentSettings.ShowMediaController) return;
+            _mediaCheckTimer = new System.Windows.Forms.Timer { Interval = 2000 };
+            _mediaCheckTimer.Tick += (s, e) => DetectMediaPlayer();
+            _mediaCheckTimer.Start();
+        }
+
+        private void DetectMediaPlayer()
+        {
+            string title = "";
+            string artist = "";
+            bool found = false;
+            bool playing = false;
+
+            // Scan all windows for known media player patterns
+            foreach (var proc in Process.GetProcesses())
+            {
+                try
+                {
+                    string wTitle = proc.MainWindowTitle;
+                    if (string.IsNullOrWhiteSpace(wTitle)) continue;
+
+                    // Spotify: "Song - Artist" or "Spotify"
+                    if (proc.ProcessName.Equals("Spotify", StringComparison.OrdinalIgnoreCase))
+                    {
+                        found = true;
+                        if (wTitle.Contains(" - "))
+                        {
+                            var parts = wTitle.Split(new[] { " - " }, 2, StringSplitOptions.None);
+                            title = parts[0].Trim();
+                            artist = parts.Length > 1 ? parts[1].Trim() : "";
+                            playing = true;
+                        }
+                        else
+                        {
+                            title = "Spotify";
+                            artist = "Durduruldu";
+                            playing = false;
+                        }
+                        break;
+                    }
+
+                    // Browser-based players: "Song - Artist - YouTube" or similar
+                    string pname = proc.ProcessName.ToLower();
+                    if (pname == "chrome" || pname == "msedge" || pname == "firefox" || pname == "opera" || pname == "brave")
+                    {
+                        if (wTitle.Contains("YouTube") || wTitle.Contains("Spotify") || wTitle.Contains("SoundCloud") || wTitle.Contains("Apple Music"))
+                        {
+                            found = true;
+                            // Strip " - YouTube" etc. from end
+                            string cleaned = wTitle;
+                            string[] suffixes = { " - YouTube", " - Google Chrome", " - Microsoft Edge", " - Mozilla Firefox", " - Opera", " - Brave" };
+                            foreach (var suffix in suffixes)
+                            {
+                                if (cleaned.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                                    cleaned = cleaned.Substring(0, cleaned.Length - suffix.Length);
+                            }
+                            if (cleaned.Contains(" - "))
+                            {
+                                var parts = cleaned.Split(new[] { " - " }, 2, StringSplitOptions.None);
+                                title = parts[0].Trim();
+                                artist = parts.Length > 1 ? parts[1].Trim() : "";
+                                playing = true;
+                            }
+                            else
+                            {
+                                title = cleaned.Trim();
+                                artist = "Duraklatıldı";
+                                playing = false;
+                            }
+                            break;
+                        }
+                    }
+
+                    // Generic: VLC, foobar2000, etc.
+                    if (pname == "vlc" || pname.Contains("foobar") || pname == "wmplayer" || pname.Contains("musicbee"))
+                    {
+                        found = true;
+                        title = wTitle;
+                        playing = !wTitle.Equals("VLC media player", StringComparison.OrdinalIgnoreCase);
+                        if (!playing)
+                            artist = "Duraklatıldı";
+                        break;
+                    }
+                }
+                catch { }
+            }
+
+            if (!found)
+            {
+                title = "Medya Oynatıcı";
+                artist = "Oynatılmıyor";
+                playing = false;
+            }
+
+            _isMediaPlaying = true; // Always display the widget if settings are enabled
+            _isMediaPlayingActive = playing;
+            _currentMediaTitle = title;
+            _currentMediaArtist = artist;
+            UpdateMediaWidget();
+        }
+
+        private void UpdateMediaWidget()
+        {
+            if (!CurrentSettings.ShowMediaController || !_isMediaPlaying)
+            {
+                if (_mediaWidget != null && !_mediaWidget.IsDisposed)
+                {
+                    _mediaWidget.Hide();
+                }
+                return;
+            }
+
+            if (_mediaWidget == null || _mediaWidget.IsDisposed)
+            {
+                _mediaWidget = new IconWindow(200); // Wider canvas
+                _mediaWidget.MouseClick += MediaWidget_MouseClick;
+            }
+
+            // Draw the media controller
+            int width = 180;
+            int height = 44;
+            using (var bmp = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppArgb))
+            using (var g = Graphics.FromImage(bmp))
+            {
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+                // Background pill
+                using (var bgBrush = new SolidBrush(Color.FromArgb(180, 20, 20, 22)))
+                using (var bgPath = RoundedRect(new Rectangle(0, 0, width - 1, height - 1), 10))
+                {
+                    g.FillPath(bgBrush, bgPath);
+                    using (var borderPen = new Pen(Color.FromArgb(60, 255, 255, 255), 1f))
+                        g.DrawPath(borderPen, bgPath);
+                }
+
+                // Media info text
+                string displayText = string.IsNullOrEmpty(_currentMediaArtist)
+                    ? _currentMediaTitle
+                    : $"{_currentMediaTitle}";
+                string artistText = _currentMediaArtist;
+
+                using (var titleFont = new Font("Segoe UI", 7.5f, FontStyle.Bold))
+                using (var artistFont = new Font("Segoe UI", 6.5f))
+                using (var whiteBrush = new SolidBrush(Color.White))
+                using (var grayBrush = new SolidBrush(Color.FromArgb(180, 200, 200, 200)))
+                {
+                    // Title (left side, top)
+                    var titleRect = new RectangleF(8, 4, width - 55, 16);
+                    using (var sf = new StringFormat { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap })
+                    {
+                        g.DrawString(displayText, titleFont, whiteBrush, titleRect, sf);
+                    }
+
+                    // Artist (left side, bottom)
+                    if (!string.IsNullOrEmpty(artistText))
+                    {
+                        var artistRect = new RectangleF(8, 22, width - 55, 14);
+                        using (var sf = new StringFormat { Trimming = StringTrimming.EllipsisCharacter, FormatFlags = StringFormatFlags.NoWrap })
+                        {
+                            g.DrawString(artistText, artistFont, grayBrush, artistRect, sf);
+                        }
+                    }
+                }
+
+                // Control buttons (right side): ◀◀  ▶/❚❚  ▶▶
+                int btnY = height / 2;
+                int btnStartX = width - 48;
+                using (var btnPen = new Pen(Color.White, 1.5f) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round })
+                using (var btnBrush = new SolidBrush(Color.White))
+                {
+                    // Previous (◀◀) at btnStartX
+                    DrawTriangle(g, btnBrush, btnStartX, btnY, 5, true);
+                    DrawTriangle(g, btnBrush, btnStartX + 5, btnY, 5, true);
+
+                    // Play/Pause (▶ / ❚❚) at btnStartX + 16
+                    if (_isMediaPlayingActive)
+                    {
+                        int px = btnStartX + 16;
+                        g.FillRectangle(btnBrush, px - 3, btnY - 5, 2, 10);
+                        g.FillRectangle(btnBrush, px + 1, btnY - 5, 2, 10);
+                    }
+                    else
+                    {
+                        DrawTriangle(g, btnBrush, btnStartX + 16, btnY, 6, false);
+                    }
+
+                    // Next (▶▶) at btnStartX + 30
+                    DrawTriangle(g, btnBrush, btnStartX + 30, btnY, 5, false);
+                    DrawTriangle(g, btnBrush, btnStartX + 35, btnY, 5, false);
+                }
+
+                _mediaWidget.SetRawBitmap(bmp, width, height);
+            }
+
+            // Position the widget above (or beside) the dock
+            Rectangle workspace = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
+            string pos = CurrentSettings.DockPosition ?? "Bottom";
+            int wx = 0, wy = 0;
+
+            if (pos.Equals("Bottom", StringComparison.OrdinalIgnoreCase))
+            {
+                wx = this.Left + (this.Width - width) / 2;
+                wy = this.Top - height - 10;
+            }
+            else if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
+            {
+                wx = this.Left + (this.Width - width) / 2;
+                wy = this.Bottom + 10;
+            }
+            else if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
+            {
+                wx = this.Right + 10;
+                wy = this.Top + (this.Height - height) / 2;
+            }
+            else // Right
+            {
+                wx = this.Left - width - 10;
+                wy = this.Top + (this.Height - height) / 2;
+            }
+
+            // Clamp positions to avoid spilling off screen boundaries
+            if (workspace != null)
+            {
+                wx = Math.Max(workspace.Left + 5, Math.Min(workspace.Right - width - 5, wx));
+                wy = Math.Max(workspace.Top + 5, Math.Min(workspace.Bottom - height - 5, wy));
+            }
+
+            _mediaWidget.UpdateBounds(wx, wy, width);
+            if (!_mediaWidget.Visible) _mediaWidget.Show(this);
+        }
+
+        private void DrawTriangle(Graphics g, Brush brush, int cx, int cy, int size, bool pointLeft)
+        {
+            var pts = new Point[3];
+            if (pointLeft)
+            {
+                pts[0] = new Point(cx - size / 2, cy);
+                pts[1] = new Point(cx + size / 2, cy - size);
+                pts[2] = new Point(cx + size / 2, cy + size);
+            }
+            else
+            {
+                pts[0] = new Point(cx + size / 2, cy);
+                pts[1] = new Point(cx - size / 2, cy - size);
+                pts[2] = new Point(cx - size / 2, cy + size);
+            }
+            g.FillPolygon(brush, pts);
+        }
+
+        private void MediaWidget_MouseClick(object? sender, MouseEventArgs e)
+        {
+            if (_mediaWidget == null) return;
+            int relX = e.X;
+            int width = 180;
+            int btnStartX = width - 48;
+
+            if (relX >= btnStartX && relX < btnStartX + 14)
+                MediaPrev();
+            else if (relX >= btnStartX + 14 && relX < btnStartX + 28)
+            {
+                MediaPlayPause();
+                // Toggle visually immediately for snappy user feedback
+                _isMediaPlayingActive = !_isMediaPlayingActive;
+                UpdateMediaWidget();
+            }
+            else if (relX >= btnStartX + 28)
+                MediaNext();
+        }
+
+        private void MediaPlayPause() { keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0); keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 2, 0); }
+        private void MediaNext() { keybd_event(VK_MEDIA_NEXT_TRACK, 0, 0, 0); keybd_event(VK_MEDIA_NEXT_TRACK, 0, 2, 0); }
+        private void MediaPrev() { keybd_event(VK_MEDIA_PREV_TRACK, 0, 0, 0); keybd_event(VK_MEDIA_PREV_TRACK, 0, 2, 0); }
+
+        private void UpdateAutoHidePositions()
+        {
+            _dockVisibleLocation = this.Location;
+            string pos = CurrentSettings.DockPosition ?? "Bottom";
+            if (pos.Equals("Bottom", StringComparison.OrdinalIgnoreCase))
+                _dockHiddenLocation = new Point(this.Left, this.Top + this.Height + 10);
+            else if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
+                _dockHiddenLocation = new Point(this.Left, this.Top - this.Height - 10);
+            else if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
+                _dockHiddenLocation = new Point(this.Left - this.Width - 10, this.Top);
+            else if (pos.Equals("Right", StringComparison.OrdinalIgnoreCase))
+                _dockHiddenLocation = new Point(this.Left + this.Width + 10, this.Top);
+        }
+
+        private void AutoHideTimerTick()
+        {
+            if (!CurrentSettings.AutoHideEnabled) return;
+            if (_dockHiddenByGameMode) return;
+
+            Point cursor = Cursor.Position;
+            Rectangle dockRect = new Rectangle(this.Location, this.Size);
+            dockRect.Inflate(AutoHideLeaveThreshold, AutoHideLeaveThreshold);
+
+            Rectangle screenBounds = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+            string pos = CurrentSettings.DockPosition ?? "Bottom";
+            bool cursorAtEdge = false;
+
+            if (pos.Equals("Bottom", StringComparison.OrdinalIgnoreCase))
+                cursorAtEdge = cursor.Y >= screenBounds.Bottom - AutoHideEdgeThreshold;
+            else if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
+                cursorAtEdge = cursor.Y <= screenBounds.Top + AutoHideEdgeThreshold;
+            else if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
+                cursorAtEdge = cursor.X <= screenBounds.Left + AutoHideEdgeThreshold;
+            else if (pos.Equals("Right", StringComparison.OrdinalIgnoreCase))
+                cursorAtEdge = cursor.X >= screenBounds.Right - AutoHideEdgeThreshold;
+
+            bool cursorInDock = new Rectangle(_dockVisibleLocation, this.Size).Contains(cursor);
+
+            if (cursorInDock || cursorAtEdge)
+            {
+                _lastCursorInDock = DateTime.Now;
+                // Slide in
+                if (_autoHideProgress > 0f)
+                {
+                    _autoHideProgress = Math.Max(0f, _autoHideProgress - 0.08f);
+                    ApplyAutoHidePosition();
+                }
+                if (_autoHideActive && _autoHideProgress <= 0f)
+                {
+                    _autoHideActive = false;
+                    SetDockVisibility(true);
+                }
+            }
+            else
+            {
+                // Check delay before hiding
+                if ((DateTime.Now - _lastCursorInDock).TotalMilliseconds > AutoHideDelayMs)
+                {
+                    if (_autoHideProgress < 1f)
+                    {
+                        _autoHideProgress = Math.Min(1f, _autoHideProgress + 0.06f);
+                        ApplyAutoHidePosition();
+                    }
+                    if (!_autoHideActive && _autoHideProgress >= 1f)
+                    {
+                        _autoHideActive = true;
+                    }
+                }
+            }
+        }
+
+        private void ApplyAutoHidePosition()
+        {
+            // EaseInOutCubic
+            float t = _autoHideProgress;
+            float eased = t < 0.5f ? 4f * t * t * t : 1f - (float)Math.Pow(-2f * t + 2f, 3) / 2f;
+
+            int x = (int)(_dockVisibleLocation.X + (_dockHiddenLocation.X - _dockVisibleLocation.X) * eased);
+            int y = (int)(_dockVisibleLocation.Y + (_dockHiddenLocation.Y - _dockVisibleLocation.Y) * eased);
+
+            this.Location = new Point(x, y);
+
+            // Offset all icon windows
+            int deltaX = x - _dockVisibleLocation.X;
+            int deltaY = y - _dockVisibleLocation.Y;
+            foreach (var item in _dockItems)
+            {
+                int ix = item.OriginalLocation.X + deltaX;
+                int iy = item.OriginalLocation.Y + deltaY;
+                item.Owner.UpdateBounds(ix, iy, item.OriginalSize.Width);
+            }
+        }
+
         private void SetDockVisibility(bool visible)
         {
             if (visible)
             {
-                this.Show();
+                if (!this.Visible)
+                {
+                    this.Show();
+                }
                 foreach (var item in _dockItems)
                 {
-                    item.Owner.Show(this);
+                    if (!item.Owner.Visible)
+                    {
+                        item.Owner.Show(this);
+                    }
                 }
                 UpdateClockVisibility();
             }
@@ -2772,9 +3802,15 @@ namespace OpenDock
             {
                 foreach (var item in _dockItems)
                 {
-                    item.Owner.Hide();
+                    if (item.Owner.Visible)
+                    {
+                        item.Owner.Hide();
+                    }
                 }
-                this.Hide();
+                if (this.Visible)
+                {
+                    this.Hide();
+                }
                 _startMenu?.Close();
                 if (_clockForm != null && !_clockForm.IsDisposed)
                 {
@@ -3216,7 +4252,6 @@ namespace OpenDock
 
                 _startMenu.Show();
             }
-
             private List<IntPtr> GetOpenWindowsForApp(DockItemData animData)
             {
                 var windows = new List<IntPtr>();
@@ -6366,6 +7401,7 @@ namespace OpenDock
             private readonly int _currentIndex;
             private readonly int _totalCount;
             private readonly Form1 _mainForm;
+            private readonly List<Bitmap>[] _appIcons;
             private Bitmap? _renderTarget;
             private Bitmap? _customBgImage;
 
@@ -6385,6 +7421,7 @@ namespace OpenDock
                 _mainForm = mainForm;
                 _currentIndex = currentIndex;
                 _totalCount = rawBitmaps.Length;
+                _appIcons = appIcons;
 
                 int scaleW = Math.Max(640, Screen.PrimaryScreen!.Bounds.Width / 2);
                 int scaleH = Math.Max(360, Screen.PrimaryScreen!.Bounds.Height / 2);
@@ -6401,24 +7438,6 @@ namespace OpenDock
                     {
                         // Generate clean workspace card with monitor icon
                         _faces[i] = CreateWorkspaceCard(i + 1, scaleW, scaleH);
-                    }
-
-                    // Decorate face with desktop name on top and running app icons at the bottom
-                    DecorateFaceBitmap(_faces[i], i + 1, appIcons[i]);
-                }
-
-                // Dispose temporary appIcon bitmaps to avoid memory leaks
-                if (appIcons != null)
-                {
-                    foreach (var list in appIcons)
-                    {
-                        if (list != null)
-                        {
-                            foreach (var bmp in list)
-                            {
-                                bmp?.Dispose();
-                            }
-                        }
                     }
                 }
 
@@ -6454,69 +7473,7 @@ namespace OpenDock
                 this.KeyDown += CubeTransitionForm_KeyDown;
             }
 
-            private static void DecorateFaceBitmap(Bitmap bmp, int index, List<Bitmap> appIcons)
-            {
-                using (var g = Graphics.FromImage(bmp))
-                {
-                    g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-                    g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
-                    int w = bmp.Width;
-                    int h = bmp.Height;
-
-                    // 2. Draw Bottom Dock Pill (Open App Icons)
-                    if (appIcons != null && appIcons.Count > 0)
-                    {
-                        int iconSize = 28;
-                        int gap = 6;
-                        int padding = 10;
-
-                        // Find how many icons fit without overflowing
-                        int maxAllowedW = w - 40;
-                        int countToDraw = 0;
-                        for (int i = 1; i <= appIcons.Count; i++)
-                        {
-                            int currentW = i * iconSize + (i - 1) * gap + padding * 2;
-                            if (currentW <= maxAllowedW)
-                            {
-                                countToDraw = i;
-                            }
-                            else
-                            {
-                                break;
-                            }
-                        }
-
-                        if (countToDraw > 0)
-                        {
-                            float dockW = countToDraw * iconSize + (countToDraw - 1) * gap + padding * 2;
-                            float dockH = iconSize + padding * 2;
-                            float dockX = (w - dockW) / 2f;
-                            float dockY = h - dockH - 12;
-
-                            // Draw dock background
-                            using (var brush = new SolidBrush(Color.FromArgb(180, 10, 10, 22)))
-                            {
-                                FillRoundRectangle(g, brush, dockX, dockY, dockW, dockH, 10f);
-                            }
-                            // Draw dock border
-                            using (var pen = new Pen(Color.FromArgb(50, 255, 255, 255), 1f))
-                            {
-                                DrawRoundRectangle(g, pen, dockX, dockY, dockW, dockH, 10f);
-                            }
-
-                            // Draw icons
-                            float startX = dockX + padding;
-                            float startY = dockY + padding;
-                            for (int i = 0; i < countToDraw; i++)
-                            {
-                                g.DrawImage(appIcons[i], startX, startY, iconSize, iconSize);
-                                startX += iconSize + gap;
-                            }
-                        }
-                    }
-                }
-            }
 
             private static void FillRoundRectangle(Graphics g, Brush brush, float x, float y, float width, float height, float radius)
             {
@@ -6658,12 +7615,13 @@ namespace OpenDock
 
                 int N = _totalCount < 3 ? 4 : _totalCount;
                 float stepAngle = 360f / N;
+                float dirSign = Form1.CurrentSettings.TransitionOutwardFacing ? -1f : 1f;
 
                 if (wasDragging)
                 {
                     // Drag release: snap to nearest face but STAY OPEN
-                    int offset = (int)Math.Round(-_angle / stepAngle);
-                    float targetAngle = -offset * stepAngle;
+                    int offset = (int)Math.Round(-dirSign * _angle / stepAngle);
+                    float targetAngle = -dirSign * offset * stepAngle;
                     AnimateTo(targetAngle, null);
                 }
                 else
@@ -6672,11 +7630,11 @@ namespace OpenDock
                     // Left Click confirms selection and enters the desktop
                     if (e.Button == MouseButtons.Left)
                     {
-                        int offset = (int)Math.Round(-_angle / stepAngle);
+                        int offset = (int)Math.Round(-dirSign * _angle / stepAngle);
                         int targetIdx = (_currentIndex + offset) % _totalCount;
                         if (targetIdx < 0) targetIdx += _totalCount;
 
-                        float targetAngle = -offset * stepAngle;
+                        float targetAngle = -dirSign * offset * stepAngle;
                         int actualTargetIdx = targetIdx;
 
                         AnimateTo(targetAngle, async () =>
@@ -6801,6 +7759,7 @@ namespace OpenDock
 
                 int N = _totalCount < 3 ? 4 : _totalCount;
                 float stepAngle = 360f / N;
+                float dirSign = Form1.CurrentSettings.TransitionOutwardFacing ? -1f : 1f;
 
                 using (var rtg = Graphics.FromImage(_renderTarget))
                 {
@@ -6819,7 +7778,7 @@ namespace OpenDock
 
                     for (int k = 0; k < _totalCount; k++)
                     {
-                        float faceAngle = (k - _currentIndex) * stepAngle + _angle;
+                        float faceAngle = (k - _currentIndex) * stepAngle + dirSign * _angle;
                         float normAngle = faceAngle % 360f;
                         if (normAngle > 180f) normAngle -= 360f;
                         if (normAngle < -180f) normAngle += 360f;
@@ -6849,63 +7808,104 @@ namespace OpenDock
                 g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver;
                 g.DrawImage(_renderTarget, cubeX, cubeY, cubeW, cubeH);
 
-                // 3. Draw sharp desktop name pills directly on screen (2D space)
+                // 3. Draw sharp desktop name pills directly on screen (2D space, locked to center)
                 float screenAR = cubeW / cubeH;
                 float screenRadius = screenAR / (float)Math.Tan(Math.PI / N);
-                float cameraZ = screenRadius + Form1.CurrentSettings.TransitionCameraOffset * screenAR;
+                float cameraZ = dirSign * screenRadius + Form1.CurrentSettings.TransitionCameraOffset * screenAR;
                 float focalScale = Form1.CurrentSettings.TransitionFocalScale * screenAR;
 
                 using (var font = new Font("Segoe UI Semibold", 14f, FontStyle.Bold))
                 {
                     g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
 
+                    // Find which desktop is currently closest to the center of the screen
+                    int closestIdx = _currentIndex;
+                    float minAngleDiff = float.MaxValue;
                     for (int k = 0; k < _totalCount; k++)
                     {
-                        float faceAngle = (k - _currentIndex) * stepAngle + _angle;
+                        float faceAngle = (k - _currentIndex) * stepAngle + dirSign * _angle;
                         float normAngle = faceAngle % 360f;
                         if (normAngle > 180f) normAngle -= 360f;
                         if (normAngle < -180f) normAngle += 360f;
 
-                        if (Math.Abs(normAngle) < 90f + 10f)
+                        if (Math.Abs(normAngle) < minAngleDiff)
                         {
-                            float rad = faceAngle * (float)Math.PI / 180f;
-                            float cos = (float)Math.Cos(rad);
-                            float sin = (float)Math.Sin(rad);
+                            minAngleDiff = Math.Abs(normAngle);
+                            closestIdx = k;
+                        }
+                    }
 
-                            float rx = screenRadius * sin;
-                            float rz = screenRadius * cos;
+                    // Calculate the static scale of a perfectly centered face to keep labels completely stationary
+                    float closestScale = 1.0f;
+                    float distClosest = Math.Abs((dirSign * screenRadius) - cameraZ);
+                    if (distClosest > 0)
+                    {
+                        closestScale = focalScale / distClosest;
+                    }
 
-                            float dist = rz - cameraZ;
-                            if (dist > 0)
+                    float screenX = this.Width / 2f;
+                    float centerYTop = (this.Height / 2f) - (cubeH / 2f) * closestScale - 12f;
+                    float centerYBottom = (this.Height / 2f) + (cubeH / 2f) * closestScale + 12f;
+
+                    // 3a. Draw Desktop Name Pill
+                    string text = $"{Loc.Get("desktop")} {closestIdx + 1}";
+                    SizeF textSize = g.MeasureString(text, font);
+
+                    float pillW = textSize.Width + 24;
+                    float pillH = textSize.Height + 8;
+                    float pillX = screenX - pillW / 2f;
+                    float pillY = centerYTop - pillH / 2f;
+
+                    // Draw pill background (glassmorphism/acrylic feel)
+                    using (var brush = new SolidBrush(Color.FromArgb(200, 10, 10, 22)))
+                    {
+                        FillRoundRectangle(g, brush, pillX, pillY, pillW, pillH, 8f);
+                    }
+                    // Draw pill border
+                    using (var pen = new Pen(Color.FromArgb(60, 255, 255, 255), 1f))
+                    {
+                        DrawRoundRectangle(g, pen, pillX, pillY, pillW, pillH, 8f);
+                    }
+                    // Draw text
+                    using (var brush = new SolidBrush(Color.FromArgb(240, 255, 255, 255)))
+                    {
+                        g.DrawString(text, font, brush, pillX + 12, pillY + 4);
+                    }
+
+                    // 3b. Draw App Icons Pill
+                    var icons = _appIcons[closestIdx];
+                    if (icons != null && icons.Count > 0)
+                    {
+                        int iconSize = 24;
+                        int gap = 6;
+                        int padding = 8;
+
+                        float iconPillW = icons.Count * iconSize + (icons.Count - 1) * gap + padding * 2;
+                        float iconPillH = iconSize + padding * 2;
+                        float iconPillX = screenX - iconPillW / 2f;
+                        float iconPillY = centerYBottom - iconPillH / 2f;
+
+                        // Draw pill background
+                        using (var brush = new SolidBrush(Color.FromArgb(200, 10, 10, 22)))
+                        {
+                            FillRoundRectangle(g, brush, iconPillX, iconPillY, iconPillW, iconPillH, 8f);
+                        }
+                        // Draw pill border
+                        using (var pen = new Pen(Color.FromArgb(60, 255, 255, 255), 1f))
+                        {
+                            DrawRoundRectangle(g, pen, iconPillX, iconPillY, iconPillW, iconPillH, 8f);
+                        }
+
+                        // Draw icons
+                        float startX = iconPillX + padding;
+                        float startY = iconPillY + padding;
+                        foreach (var iconBmp in icons)
+                        {
+                            if (iconBmp != null)
                             {
-                                float scale = focalScale / dist;
-                                float screenX = (this.Width / 2f) + rx * (cubeH / 2f) * scale;
-                                float screenY = (this.Height / 2f) - (cubeH / 2f) * scale - 25f;
-
-                                string text = $"{Loc.Get("desktop")} {k + 1}";
-                                SizeF textSize = g.MeasureString(text, font);
-
-                                float pillW = textSize.Width + 24;
-                                float pillH = textSize.Height + 8;
-                                float pillX = screenX - pillW / 2f;
-                                float pillY = screenY - pillH / 2f;
-
-                                // Draw pill background (glassmorphism/acrylic feel)
-                                using (var brush = new SolidBrush(Color.FromArgb(200, 10, 10, 22)))
-                                {
-                                    FillRoundRectangle(g, brush, pillX, pillY, pillW, pillH, 8f);
-                                }
-                                // Draw pill border
-                                using (var pen = new Pen(Color.FromArgb(60, 255, 255, 255), 1f))
-                                {
-                                    DrawRoundRectangle(g, pen, pillX, pillY, pillW, pillH, 8f);
-                                }
-                                // Draw text
-                                using (var brush = new SolidBrush(Color.FromArgb(240, 255, 255, 255)))
-                                {
-                                    g.DrawString(text, font, brush, pillX + 12, pillY + 4);
-                                }
+                                g.DrawImage(iconBmp, startX, startY, iconSize, iconSize);
                             }
+                            startX += iconSize + gap;
                         }
                     }
                 }
@@ -6921,20 +7921,21 @@ namespace OpenDock
                 float centerY = destRect.Height / 2f;
 
                 float AR = destWidth / destHeight;
+                float dirSign = Form1.CurrentSettings.TransitionOutwardFacing ? -1f : 1f;
 
                 float rad = rotationAngle * (float)Math.PI / 180f;
                 float cos = (float)Math.Cos(rad);
                 float sin = (float)Math.Sin(rad);
 
-                float cameraZ = R + Form1.CurrentSettings.TransitionCameraOffset * AR;
+                float cameraZ = dirSign * R + Form1.CurrentSettings.TransitionCameraOffset * AR;
                 float focalScale = Form1.CurrentSettings.TransitionFocalScale * AR;
 
                 for (int i = 0; i < slices; i++)
                 {
                     float normX = (i / (float)slices) * 2f - 1f;
 
-                    float rx = (normX * AR) * cos + R * sin;
-                    float rz = -(normX * AR) * sin + R * cos;
+                    float rx = (normX * AR) * cos + dirSign * R * sin;
+                    float rz = -(normX * AR) * sin + dirSign * R * cos;
 
                     float dist = rz - cameraZ;
                     if (dist <= 0) continue;
@@ -6946,8 +7947,8 @@ namespace OpenDock
                     float screenY = centerY - sliceHeight / 2;
 
                     float nextNormX = ((i + 1) / (float)slices) * 2f - 1f;
-                    float nextRx = (nextNormX * AR) * cos + R * sin;
-                    float nextRz = -(nextNormX * AR) * sin + R * cos;
+                    float nextRx = (nextNormX * AR) * cos + dirSign * R * sin;
+                    float nextRz = -(nextNormX * AR) * sin + dirSign * R * cos;
                     float nextDist = nextRz - cameraZ;
                     if (nextDist <= 0) continue;
 
@@ -6976,6 +7977,19 @@ namespace OpenDock
                         foreach (var face in _faces)
                         {
                             face?.Dispose();
+                        }
+                    }
+                    if (_appIcons != null)
+                    {
+                        foreach (var list in _appIcons)
+                        {
+                            if (list != null)
+                            {
+                                foreach (var bmp in list)
+                                {
+                                    bmp?.Dispose();
+                                }
+                            }
                         }
                     }
                     _renderTarget?.Dispose();
