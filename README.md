@@ -13,8 +13,8 @@ A lightweight, high-performance, and modern **macOS-style Dock for Windows 11 an
 * **Custom Logo Launcher**: Upload your own custom `32x32` pixel image for the start menu button or reset to the Windows default icon with one click.
 
 ### 2. 🕒 Dynamic Clock Widget with CSS Engines
-* **Style via CSS**: Configure fonts, text alignments, shadows, sizes, and colors of your clock widget using a `quick.css` file.
-* **Hot-Reloading (FileSystemWatcher)**: Any saved changes in `quick.css` are instantly hot-reloaded and rendered on your clock without restarting the application.
+* **Style via CSS**: Configure fonts, text alignments, shadows, sizes, and colors of your clock widget using a `opendock.css` file.
+* **Hot-Reloading (FileSystemWatcher)**: Any saved changes in `opendock.css` are instantly hot-reloaded and rendered on your clock without restarting the application.
 * **Modern Typography Support**: Easily apply premium web/system fonts (e.g., Inter, Segoe UI, Outfit) using regular CSS rules.
 
 ### 3. 🌀 Immersive 3D Carousel Switcher (3D Virtual Desktops)
@@ -48,17 +48,40 @@ OpenDock relies entirely on native Win32/COM/DWM APIs. You do not need to instal
 ## ⚙️ Configuration & Customization
 
 * **Tray System**: Right-click the OpenDock taskbar tray icon to access opacity scales, icon metrics, transition settings, startup automation, and custom layouts.
-* **CSS Customization**: Open `quick.css` (generated in the application directory) to adjust clock styles:
-  ```css
-  /* OpenDock QuickCSS - Clock Styling File */
-  .clock {
-      font-family: 'Inter', 'Segoe UI';
-      font-size: 28px;
-      font-weight: bold;
-      color: #00ffcc; /* Neon green clock font */
-      text-align: right;
-  }
-  ```
+* **CSS Customization**: Open `opendock.css` (generated in the application directory) to adjust clock styles:
+```css
+
+/* OpenDock Style Sheet */
+
+.dock {
+    /* Background color of the dock (Hex, RGB or RGBA for transparency) */
+    background-color: rgba(18, 18, 20, 0.3);
+
+    /* Border color of the dock */
+    border-color: rgba(255, 255, 255, 0.15);
+
+    /* Border line width in pixels */
+    border-width: 1px;
+
+    /* Corner rounding radius in pixels */
+    border-radius: 16px;
+
+    /* Spacing between icons in pixels */
+    icon-spacing: 15px;
+
+    /* Magnified icon size when hovered (in pixels, 48 - 128) */
+    magnification-size: 48px;
+}
+
+.clock {
+    font-family: 'Segoe UI';
+    font-size: 24px;
+    font-weight: bold;
+    color: #ffffff;
+    text-align: right;
+}
+
+```
 
 ---
 
