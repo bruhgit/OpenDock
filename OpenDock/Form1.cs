@@ -1208,6 +1208,8 @@ namespace OpenDock
         {
             this.SuspendLayout();
             LoadSettings();
+            ApplyCssStyles();
+            InitializeCssWatcher();
             if (CurrentSettings.MediaControllerCustomX != -9999 && CurrentSettings.MediaControllerCustomY != -9999)
             {
                 _mediaCustomLocation = new Point(CurrentSettings.MediaControllerCustomX, CurrentSettings.MediaControllerCustomY);
@@ -2927,17 +2929,30 @@ namespace OpenDock
             {
                 try
                 {
-                    string cssPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "quick.css");
+                    string cssPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "opendock.css");
                     if (!System.IO.File.Exists(cssPath))
                     {
                         string defaultCss = 
-@"/* OpenDock QuickCSS - Clock Styling File */
+@"/* OpenDock Custom Stylesheet */
+
 .clock {
     font-family: 'Segoe UI';
     font-size: 24px;
     font-weight: bold;
     color: #ffffff;
     text-align: right;
+}
+
+.dock {
+    background-color: #181818;
+    opacity: 175;
+    icon-size: 32px;
+    position: bottom;
+    auto-hide: false;
+}
+
+.menu {
+    background-color: #181818;
 }";
                         System.IO.File.WriteAllText(cssPath, defaultCss);
                     }
@@ -3165,7 +3180,7 @@ namespace OpenDock
             var aboutItem = new ToolStripMenuItem(Loc.Get("about"));
             aboutItem.Click += (s, e) =>
             {
-                var aboutForm = new AboutForm($"OpenDock v5.2.1", Loc.Get("about_msg"), Loc.Get("dialog_close"));
+                var aboutForm = new AboutForm($"OpenDock v5.2.2", Loc.Get("about_msg"), Loc.Get("dialog_close"));
                 aboutForm.ShowDialog(this);
             };
             contextMenu.Items.Add(aboutItem);
@@ -6217,8 +6232,6 @@ namespace OpenDock
         {
             private Label _timeLabel;
             private System.Windows.Forms.Timer _timer;
-            private System.IO.FileSystemWatcher? _cssWatcher;
-
             public ClockForm()
             {
                 this.FormBorderStyle = FormBorderStyle.None;
@@ -6247,7 +6260,6 @@ namespace OpenDock
                 _timer.Start();
 
                 ApplyCssStyles();
-                InitializeCssWatcher();
                 UpdateTime();
             }
 
@@ -6256,9 +6268,9 @@ namespace OpenDock
                 _timeLabel.Text = DateTime.Now.ToString("HH:mm:ss");
             }
 
-            private void ApplyCssStyles()
+            public void ApplyCssStyles()
             {
-                string cssPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "quick.css");
+                string cssPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "opendock.css");
                 
                 string fontFamily = "Segoe UI";
                 float fontSize = 20f;
@@ -6266,19 +6278,30 @@ namespace OpenDock
                 Color textColor = Color.White;
                 ContentAlignment alignment = ContentAlignment.MiddleRight;
 
-                // Auto-create default quick.css if it doesn't exist
                 if (!System.IO.File.Exists(cssPath))
                 {
                     try
                     {
                         string defaultCss = 
-@"/* OpenDock QuickCSS - Clock Styling File */
+@"/* OpenDock Custom Stylesheet */
 .clock {
     font-family: 'Segoe UI';
     font-size: 24px;
     font-weight: bold;
     color: #ffffff;
     text-align: right;
+}
+
+.dock {
+    background-color: #181818;
+    opacity: 175;
+    icon-size: 32px;
+    position: bottom;
+    auto-hide: false;
+}
+
+.menu {
+    background-color: #181818;
 }";
                         System.IO.File.WriteAllText(cssPath, defaultCss);
                     }
@@ -6363,7 +6386,7 @@ namespace OpenDock
                 }
             }
 
-            private static Color ParseHtmlColor(string htmlColor, Color defaultColor)
+            internal static Color ParseHtmlColor(string htmlColor, Color defaultColor)
             {
                 try
                 {
@@ -6396,34 +6419,6 @@ namespace OpenDock
                 return defaultColor;
             }
 
-            private void InitializeCssWatcher()
-            {
-                try
-                {
-                    string dir = AppDomain.CurrentDomain.BaseDirectory;
-                    _cssWatcher = new System.IO.FileSystemWatcher(dir, "quick.css")
-                    {
-                        NotifyFilter = System.IO.NotifyFilters.LastWrite | System.IO.NotifyFilters.FileName
-                    };
-
-                    _cssWatcher.Changed += (s, e) =>
-                    {
-                        if (this.IsDisposed) return;
-                        this.BeginInvoke(new Action(async () =>
-                        {
-                            await Task.Delay(100);
-                            if (!this.IsDisposed)
-                            {
-                                ApplyCssStyles();
-                            }
-                        }));
-                    };
-
-                    _cssWatcher.EnableRaisingEvents = true;
-                }
-                catch { }
-            }
-
             protected override CreateParams CreateParams
             {
                 get
@@ -6442,7 +6437,6 @@ namespace OpenDock
                 {
                     _timer?.Stop();
                     _timer?.Dispose();
-                    _cssWatcher?.Dispose();
                 }
                 base.Dispose(disposing);
             }
@@ -8258,6 +8252,173 @@ namespace OpenDock
 {
     public partial class Form1
     {
+        private System.IO.FileSystemWatcher? _cssWatcher;
+
+        private void InitializeCssWatcher()
+        {
+            try
+            {
+                string dir = AppDomain.CurrentDomain.BaseDirectory;
+                _cssWatcher = new System.IO.FileSystemWatcher(dir, "opendock.css")
+                {
+                    NotifyFilter = System.IO.NotifyFilters.LastWrite | System.IO.NotifyFilters.FileName
+                };
+
+                _cssWatcher.Changed += (s, e) =>
+                {
+                    if (this.IsDisposed) return;
+                    this.BeginInvoke(new Action(async () =>
+                    {
+                        await Task.Delay(100);
+                        if (!this.IsDisposed)
+                        {
+                            ApplyCssStyles();
+                        }
+                    }));
+                };
+
+                _cssWatcher.EnableRaisingEvents = true;
+            }
+            catch { }
+        }
+
+        private void ApplyCssStyles()
+        {
+            string cssPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "opendock.css");
+            if (!System.IO.File.Exists(cssPath))
+            {
+                try
+                {
+                    string defaultCss = 
+@"/* OpenDock Custom Stylesheet */
+
+.clock {
+    font-family: 'Segoe UI';
+    font-size: 24px;
+    font-weight: bold;
+    color: #ffffff;
+    text-align: right;
+}
+
+.dock {
+    background-color: #181818;
+    opacity: 175;
+    icon-size: 32px;
+    position: bottom;
+    auto-hide: false;
+}
+
+.menu {
+    background-color: #181818;
+}";
+                    System.IO.File.WriteAllText(cssPath, defaultCss);
+                }
+                catch { }
+            }
+
+            try
+            {
+                if (System.IO.File.Exists(cssPath))
+                {
+                    string content = System.IO.File.ReadAllText(cssPath);
+                    
+                    // Parse .dock block
+                    var dockMatch = System.Text.RegularExpressions.Regex.Match(content, @"\.dock\s*\{([^}]+)\}", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (dockMatch.Success)
+                    {
+                        string propertiesStr = dockMatch.Groups[1].Value;
+                        var lines = propertiesStr.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                        foreach (var line in lines)
+                        {
+                            var parts = line.Split(new char[] { ':' }, 2);
+                            if (parts.Length == 2)
+                            {
+                                string name = parts[0].Trim().ToLower();
+                                string val = parts[1].Trim().Trim('\'', '"');
+
+                                if (name == "background-color")
+                                {
+                                    Color c = ClockForm.ParseHtmlColor(val, Color.FromArgb(175, 24, 24, 24));
+                                    CurrentSettings.DockColorArgb = Color.FromArgb(CurrentSettings.DockBackgroundAlpha, c.R, c.G, c.B).ToArgb();
+                                }
+                                else if (name == "opacity")
+                                {
+                                    if (int.TryParse(val, out int alpha))
+                                    {
+                                        alpha = Math.Max(0, Math.Min(255, alpha));
+                                        CurrentSettings.DockBackgroundAlpha = alpha;
+                                        Color c = Color.FromArgb(CurrentSettings.DockColorArgb);
+                                        CurrentSettings.DockColorArgb = Color.FromArgb(alpha, c.R, c.G, c.B).ToArgb();
+                                    }
+                                }
+                                else if (name == "icon-size")
+                                {
+                                    string cleanVal = System.Text.RegularExpressions.Regex.Replace(val, @"[a-zA-Z]", "").Trim();
+                                    if (int.TryParse(cleanVal, out int sz))
+                                    {
+                                        sz = Math.Max(16, Math.Min(128, sz));
+                                        CurrentSettings.DockIconSize = sz;
+                                    }
+                                }
+                                else if (name == "position")
+                                {
+                                    if (val.Equals("bottom", StringComparison.OrdinalIgnoreCase) ||
+                                        val.Equals("top", StringComparison.OrdinalIgnoreCase) ||
+                                        val.Equals("left", StringComparison.OrdinalIgnoreCase) ||
+                                        val.Equals("right", StringComparison.OrdinalIgnoreCase))
+                                    {
+                                        CurrentSettings.DockPosition = char.ToUpper(val[0]) + val.Substring(1).ToLower();
+                                    }
+                                }
+                                else if (name == "auto-hide")
+                                {
+                                    if (bool.TryParse(val, out bool autoHide))
+                                    {
+                                        CurrentSettings.AutoHideEnabled = autoHide;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Parse .menu block
+                    var menuMatch = System.Text.RegularExpressions.Regex.Match(content, @"\.menu\s*\{([^}]+)\}", System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+                    if (menuMatch.Success)
+                    {
+                        string propertiesStr = menuMatch.Groups[1].Value;
+                        var lines = propertiesStr.Split(new char[] { ';' }, StringSplitOptions.RemoveEmptyEntries);
+                        foreach (var line in lines)
+                        {
+                            var parts = line.Split(new char[] { ':' }, 2);
+                            if (parts.Length == 2)
+                            {
+                                string name = parts[0].Trim().ToLower();
+                                string val = parts[1].Trim().Trim('\'', '"');
+
+                                if (name == "background-color")
+                                {
+                                    Color c = ClockForm.ParseHtmlColor(val, Color.FromArgb(175, 24, 24, 24));
+                                    CurrentSettings.MenuColorArgb = Color.FromArgb(CurrentSettings.DockBackgroundAlpha, c.R, c.G, c.B).ToArgb();
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            catch { }
+
+            // Apply settings to Dock
+            this.BackColor = Color.Black; // Must remain solid black as it acts as the transparency key
+            UpdateDockPositionAndSize();
+            SaveSettings();
+
+            // Refresh clock if active
+            if (_clockForm != null && !_clockForm.IsDisposed)
+            {
+                _clockForm.ApplyCssStyles();
+            }
+        }
+
         public class AboutForm : Form
         {
             private readonly string _title;
