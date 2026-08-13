@@ -349,6 +349,31 @@ namespace OpenDock
         [DllImport("user32.dll")]
         private static extern int SetWindowCompositionAttribute(IntPtr hwnd, ref WindowCompositionAttributeData data);
 
+        [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Auto)]
+        private struct SHFILEOPSTRUCT
+        {
+            public IntPtr hwnd;
+            public uint wFunc;
+            [MarshalAs(UnmanagedType.LPTStr)]
+            public string pFrom;
+            [MarshalAs(UnmanagedType.LPTStr)]
+            public string? pTo;
+            public ushort fFlags;
+            public bool fAnyOperationsAborted;
+            public IntPtr hNameMappings;
+            [MarshalAs(UnmanagedType.LPTStr)]
+            public string? lpszProgressTitle;
+        }
+
+        [DllImport("shell32.dll", CharSet = CharSet.Auto)]
+        private static extern int SHFileOperation(ref SHFILEOPSTRUCT lpFileOp);
+
+        private const uint FO_DELETE = 0x0003;
+        private const ushort FOF_ALLOWUNDO = 0x0040;
+        private const ushort FOF_NOCONFIRMATION = 0x0010;
+        private const ushort FOF_NOERRORUI = 0x0400;
+        private const ushort FOF_SILENT = 0x0004;
+
         private enum AccentState
         {
             ACCENT_DISABLED = 0,
@@ -650,7 +675,7 @@ namespace OpenDock
                 _bitmap?.Dispose();
                 _bitmap = scaled;
 
-                SetBounds(windowX, windowY, windowWidth, windowHeight);
+                SetWindowPos(Handle, HWND_TOPMOST, windowX, windowY, windowWidth, windowHeight, SWP_NOACTIVATE);
                 Redraw(windowX, windowY);
             }
 
@@ -856,6 +881,11 @@ namespace OpenDock
         private System.Windows.Forms.Timer _autoRefreshTimer = null!;
         private NotifyIcon? _trayIcon;
         private ToolStripMenuItem? _startupMenuItem;
+        private ToolStripMenuItem? _showClockMenuItem;
+        private ToolStripMenuItem? _separateRunningAppsMenuItem;
+        private ToolStripMenuItem? _autoHideMenuItem;
+        private ToolStripMenuItem? _showMediaMenuItem;
+        private ToolStripMenuItem? _dockBgShowMediaMenuItem;
         private bool _isUpdatingStartupMenuState;
         private int _separatorX = -1;
         private int _separatorY = -1;
@@ -1024,8 +1054,7 @@ namespace OpenDock
             }
 
             ApplyDockRegion();
-            if (_autoHideTimer != null)
-                UpdateAutoHidePositions();
+            UpdateAutoHidePositions();
         }
 
         private void ChangeDockPosition(string position)
@@ -1125,6 +1154,45 @@ namespace OpenDock
             RefreshDockIcons();
         }
 
+        private void RecycleBin_DragEnter(object? sender, DragEventArgs e)
+        {
+            if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+            {
+                e.Effect = DragDropEffects.Move;
+            }
+            else
+            {
+                e.Effect = DragDropEffects.None;
+            }
+        }
+
+        private void RecycleBin_DragDrop(object? sender, DragEventArgs e)
+        {
+            if (e.Data?.GetDataPresent(DataFormats.FileDrop) != true) return;
+            string[]? files = e.Data.GetData(DataFormats.FileDrop) as string[];
+            if (files == null || files.Length == 0) return;
+
+            Task.Run(() =>
+            {
+                try
+                {
+                    SHFILEOPSTRUCT fileop = new SHFILEOPSTRUCT
+                    {
+                        wFunc = FO_DELETE,
+                        pFrom = string.Join("\0", files) + "\0\0",
+                        fFlags = FOF_ALLOWUNDO | FOF_NOCONFIRMATION | FOF_NOERRORUI | FOF_SILENT
+                    };
+                    SHFileOperation(ref fileop);
+
+                    if (!IsDisposed && IsHandleCreated)
+                    {
+                        this.BeginInvoke(new Action(() => RefreshDockIcons()));
+                    }
+                }
+                catch { }
+            });
+        }
+
         private void Form1_Load(object sender, EventArgs e)
         {
             this.SuspendLayout();
@@ -1178,6 +1246,30 @@ namespace OpenDock
             var refreshItem = new ToolStripMenuItem("Yenile");
             refreshItem.Click += (s, e) => RefreshDockIcons();
             _dockBgContextMenu.Items.Add(refreshItem);
+
+            _dockBgContextMenu.Items.Add("-");
+
+            _dockBgShowMediaMenuItem = new ToolStripMenuItem(Loc.Get("show_media_controller"))
+            {
+                CheckOnClick = true,
+                Checked = CurrentSettings.ShowMediaController
+            };
+            _dockBgShowMediaMenuItem.CheckedChanged += (s, e) =>
+            {
+                CurrentSettings.ShowMediaController = _dockBgShowMediaMenuItem.Checked;
+                SaveSettings();
+                DetectMediaPlayer();
+            };
+            _dockBgContextMenu.Items.Add(_dockBgShowMediaMenuItem);
+
+            _dockBgContextMenu.Opening += (s, e) =>
+            {
+                if (_dockBgShowMediaMenuItem != null)
+                {
+                    _dockBgShowMediaMenuItem.Checked = CurrentSettings.ShowMediaController;
+                }
+            };
+            SetupMenuBlur(_dockBgContextMenu);
 
             this.Activated += (s, e) => EnableBlur();
             this.Deactivate += (s, e) => EnableBlur();
@@ -1604,16 +1696,27 @@ namespace OpenDock
                 }
             }
 
-            // Add Recycle Bin widget at the end
+            // Add Recycle Bin widget at the far end (just before the Windows logo separator)
             if (CurrentSettings.ShowRecycleBin)
             {
-                startOffset += 10; // Small gap before recycle bin
+                int rbWinButtonOffset = (isVertical ? this.Height : this.Width) - (baseSize * 2) - 40;
+                int rbSeparatorOffset = rbWinButtonOffset - 15;
+                int rbOffset = rbSeparatorOffset - baseSize - 15;
+
+                // Safeguard: prevent overlapping with app icons if there are too many
+                if (rbOffset < startOffset + 10)
+                {
+                    rbOffset = startOffset + 10;
+                }
 
                 Point rbLocation;
                 if (isVertical)
-                    rbLocation = new Point(this.Left + defaultOffset, this.Top + startOffset);
+                    rbLocation = new Point(this.Left + defaultOffset, this.Top + rbOffset);
                 else
-                    rbLocation = new Point(this.Left + startOffset, this.Top + defaultOffset);
+                    rbLocation = new Point(this.Left + rbOffset, this.Top + defaultOffset);
+
+                // Update startOffset so any calculations after this know the final layout boundary
+                startOffset = rbOffset;
 
                 var rbIconWindow = new IconWindow(MaxIconSize);
                 var rbIcon = GetRecycleBinIcon();
@@ -1653,11 +1756,15 @@ namespace OpenDock
                     }
                 };
 
+                rbIconWindow.AllowDrop = true;
+                rbIconWindow.DragEnter += RecycleBin_DragEnter;
+                rbIconWindow.DragDrop += RecycleBin_DragDrop;
+
                 rbIconWindow.Show(this);
                 rbIconWindow.UpdateBounds(rbLocation.X, rbLocation.Y, baseSize);
                 _dockItems.Add(rbData);
 
-                startOffset += baseSize + 15;
+                startOffset = rbOffset + baseSize + 15;
             }
 
             // Draw a separator line and place the Windows button and Task View button at the very bottom/right of the dock
@@ -2169,7 +2276,11 @@ namespace OpenDock
 
             var menu = new ContextMenuStrip
             {
-                ShowImageMargin = false
+                Renderer = new ModernTrayMenuRenderer(),
+                ShowImageMargin = false,
+                BackColor = Color.FromArgb(32, 32, 34),
+                ForeColor = Color.FromArgb(246, 247, 249),
+                Font = new Font("Segoe UI", 9.5f)
             };
 
             var pinToggleText = data.IsPinned ? "Dock'tan kaldır" : "Dock'a kilitle";
@@ -2226,6 +2337,7 @@ namespace OpenDock
                 }
             }
 
+            SetupMenuBlur(menu);
             return menu;
         }
         private void CheckForWindowChanges()
@@ -2326,43 +2438,7 @@ namespace OpenDock
                             item.Owner._appName = currentTitle;
 
                             // Repaint the window to reflect the title change smoothly
-                            int targetSize = item.OriginalSize.Width;
-                            if (item.CurrentProgress > 0.0)
-                            {
-                                int minSize = item.OriginalSize.Width;
-                                int maxSize = 48;
-                                targetSize = minSize + (int)((maxSize - minSize) * item.CurrentProgress);
-                            }
-                            targetSize = (int)(targetSize * item.EnterProgress);
-
-                            // Calculate target location based on progress (like in UpdateAnimation)
-                            int currentX = item.OriginalLocation.X;
-                            int currentY = item.OriginalLocation.Y;
-                            int sizeDiff = targetSize - item.OriginalSize.Width;
-                            int maxYukseklik = 24;
-                            string pos = CurrentSettings.DockPosition ?? "Bottom";
-                            bool isVertical = pos.Equals("Left", StringComparison.OrdinalIgnoreCase) ||
-                                              pos.Equals("Right", StringComparison.OrdinalIgnoreCase);
-
-                            if (isVertical)
-                            {
-                                currentY = item.OriginalLocation.Y - sizeDiff / 2;
-                                if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
-                                    currentX = item.OriginalLocation.X + (int)(maxYukseklik * item.CurrentProgress);
-                                else
-                                    currentX = item.OriginalLocation.X - (int)(maxYukseklik * item.CurrentProgress) - sizeDiff;
-                            }
-                            else
-                            {
-                                currentX = item.OriginalLocation.X - sizeDiff / 2;
-                                if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
-                                    currentY = item.OriginalLocation.Y + (int)(maxYukseklik * item.CurrentProgress);
-                                else
-                                    currentY = item.OriginalLocation.Y - (int)(maxYukseklik * item.CurrentProgress);
-                            }
-
-                            // Trigger redraw
-                            item.Owner.UpdateBounds(currentX, currentY, targetSize);
+                            UpdateSingleIconPosition(item);
                         }
                     }
                 }
@@ -2400,63 +2476,6 @@ namespace OpenDock
                 }
             }
 
-            int minSize = data.OriginalSize.Width;
-            int maxSize = 48;
-            int currentSize = minSize + (int)((maxSize - minSize) * data.CurrentProgress);
-
-            // Apply magnification wave
-            if (CurrentSettings.MagnificationEnabled && data.TargetMagnification > 0.001)
-            {
-                int magBoost = (int)((CurrentSettings.MagnifiedIconSize - currentSize) * data.TargetMagnification);
-                currentSize = Math.Min(currentSize + magBoost, CurrentSettings.MagnifiedIconSize);
-            }
-
-            // Apply EnterProgress scale
-            currentSize = (int)(currentSize * data.EnterProgress);
-
-            int maxYukseklik = 24;
-            string pos = CurrentSettings.DockPosition ?? "Bottom";
-            bool isVertical = pos.Equals("Left", StringComparison.OrdinalIgnoreCase) ||
-                              pos.Equals("Right", StringComparison.OrdinalIgnoreCase);
-
-            int currentX = data.OriginalLocation.X;
-            int currentY = data.OriginalLocation.Y;
-
-            int sizeDiff = currentSize - minSize;
-
-            if (isVertical)
-            {
-                // Centered vertically when scaling
-                currentY = data.OriginalLocation.Y - sizeDiff / 2;
-
-                if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Shifts Right (inwards) when hovered
-                    currentX = data.OriginalLocation.X + (int)(maxYukseklik * data.CurrentProgress);
-                }
-                else // Right
-                {
-                    // Shifts Left (inwards) when hovered
-                    currentX = data.OriginalLocation.X - (int)(maxYukseklik * data.CurrentProgress) - sizeDiff;
-                }
-            }
-            else // Horizontal (Bottom or Top)
-            {
-                // Centered horizontally when scaling
-                currentX = data.OriginalLocation.X - sizeDiff / 2;
-
-                if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
-                {
-                    // Shifts Down (inwards) when hovered
-                    currentY = data.OriginalLocation.Y + (int)(maxYukseklik * data.CurrentProgress);
-                }
-                else // Bottom
-                {
-                    // Shifts Up (inwards) when hovered
-                    currentY = data.OriginalLocation.Y - (int)(maxYukseklik * data.CurrentProgress);
-                }
-            }
-
             // Apply Bouncing physics (trampoline spring effect)
             if (data.IsBouncing)
             {
@@ -2480,28 +2499,73 @@ namespace OpenDock
                         data.BounceVelocity = -12.0f; // fresh jump
                     }
                 }
-
-                // Bounce direction is inwards/outwards relative to screen bounds
-                if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
-                {
-                    currentX += (int)(-data.BounceY);
-                }
-                else if (pos.Equals("Right", StringComparison.OrdinalIgnoreCase))
-                {
-                    currentX -= (int)(-data.BounceY);
-                }
-                else if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
-                {
-                    currentY += (int)(-data.BounceY);
-                }
-                else // Bottom
-                {
-                    currentY += (int)data.BounceY;
-                }
             }
 
+            UpdateSingleIconPosition(data);
+        }
 
-            data.Owner.UpdateBounds(currentX, currentY, currentSize);
+        private void UpdateSingleIconPosition(DockItemData item)
+        {
+            if (item.Owner == null || item.Owner.IsDisposed) return;
+
+            string pos = CurrentSettings.DockPosition ?? "Bottom";
+            bool isVertical = pos.Equals("Left", StringComparison.OrdinalIgnoreCase) ||
+                              pos.Equals("Right", StringComparison.OrdinalIgnoreCase);
+            int baseSize = CurrentSettings.DockIconSize;
+
+            int minSize = item.OriginalSize.Width;
+            int maxSize = 48;
+            int currentSize = minSize + (int)((maxSize - minSize) * item.CurrentProgress);
+
+            if (CurrentSettings.MagnificationEnabled && item.TargetMagnification > 0.001)
+            {
+                int magBoost = (int)((CurrentSettings.MagnifiedIconSize - currentSize) * item.TargetMagnification);
+                currentSize = Math.Min(currentSize + magBoost, CurrentSettings.MagnifiedIconSize);
+            }
+
+            currentSize = (int)(currentSize * item.EnterProgress);
+
+            int sizeDiff = currentSize - minSize;
+            int maxYukseklik = 24;
+
+            // Offset of the icon relative to the dock visible anchor point
+            int offsetX = item.OriginalLocation.X - _dockVisibleLocation.X;
+            int offsetY = item.OriginalLocation.Y - _dockVisibleLocation.Y;
+
+            // Positioning relative to CURRENT dock location (fully handles auto-hide sliding and clamping)
+            int currentX = this.Left + offsetX;
+            int currentY = this.Top + offsetY;
+
+            if (isVertical)
+            {
+                currentY -= sizeDiff / 2;
+                if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
+                    currentX += (int)(maxYukseklik * item.CurrentProgress);
+                else
+                    currentX -= (int)(maxYukseklik * item.CurrentProgress) + sizeDiff;
+            }
+            else
+            {
+                currentX -= sizeDiff / 2;
+                if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
+                    currentY += (int)(maxYukseklik * item.CurrentProgress);
+                else
+                    currentY -= (int)(maxYukseklik * item.CurrentProgress);
+            }
+
+            if (item.IsBouncing)
+            {
+                if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
+                    currentX += (int)(-item.BounceY);
+                else if (pos.Equals("Right", StringComparison.OrdinalIgnoreCase))
+                    currentX -= (int)(-item.BounceY);
+                else if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
+                    currentY += (int)(-item.BounceY);
+                else
+                    currentY += (int)item.BounceY;
+            }
+
+            item.Owner.UpdateBounds(currentX, currentY, currentSize);
         }
 
         private void PicBox_MouseEnter(DockItemData data)
@@ -2792,44 +2856,44 @@ namespace OpenDock
             appearanceMenu.DropDownItems.Add(iconSizeMenu);
 
             appearanceMenu.DropDownItems.Add("-");
-            var showClockMenuItem = new ToolStripMenuItem(Loc.Get("show_clock"))
+            _showClockMenuItem = new ToolStripMenuItem(Loc.Get("show_clock"))
             {
                 CheckOnClick = true,
                 Checked = CurrentSettings.ShowClock
             };
-            showClockMenuItem.CheckedChanged += (s, e) =>
+            _showClockMenuItem.CheckedChanged += (s, e) =>
             {
-                CurrentSettings.ShowClock = showClockMenuItem.Checked;
+                CurrentSettings.ShowClock = _showClockMenuItem.Checked;
                 SaveSettings();
                 UpdateClockVisibility();
             };
-            appearanceMenu.DropDownItems.Add(showClockMenuItem);
+            appearanceMenu.DropDownItems.Add(_showClockMenuItem);
 
-            var separateRunningAppsMenuItem = new ToolStripMenuItem(Loc.Get("separate_running_apps"))
+            _separateRunningAppsMenuItem = new ToolStripMenuItem(Loc.Get("separate_running_apps"))
             {
                 CheckOnClick = true,
                 Checked = CurrentSettings.SeparateRunningApps
             };
-            separateRunningAppsMenuItem.CheckedChanged += (s, e) =>
+            _separateRunningAppsMenuItem.CheckedChanged += (s, e) =>
             {
-                CurrentSettings.SeparateRunningApps = separateRunningAppsMenuItem.Checked;
+                CurrentSettings.SeparateRunningApps = _separateRunningAppsMenuItem.Checked;
                 SaveSettings();
                 RefreshDockIcons();
             };
-            appearanceMenu.DropDownItems.Add(separateRunningAppsMenuItem);
+            appearanceMenu.DropDownItems.Add(_separateRunningAppsMenuItem);
 
-            var showMediaMenuItem = new ToolStripMenuItem(Loc.Get("show_media_controller"))
+            _showMediaMenuItem = new ToolStripMenuItem(Loc.Get("show_media_controller"))
             {
                 CheckOnClick = true,
                 Checked = CurrentSettings.ShowMediaController
             };
-            showMediaMenuItem.CheckedChanged += (s, e) =>
+            _showMediaMenuItem.CheckedChanged += (s, e) =>
             {
-                CurrentSettings.ShowMediaController = showMediaMenuItem.Checked;
+                CurrentSettings.ShowMediaController = _showMediaMenuItem.Checked;
                 SaveSettings();
                 DetectMediaPlayer(); // instantly shows/hides the widget based on the new setting
             };
-            appearanceMenu.DropDownItems.Add(showMediaMenuItem);
+            appearanceMenu.DropDownItems.Add(_showMediaMenuItem);
 
             appearanceMenu.DropDownItems.Add(Loc.Get("edit_css"), null, (s, e) =>
             {
@@ -2877,16 +2941,16 @@ namespace OpenDock
             };
             contextMenu.Items.Add(gameModeMenuItem);
 
-            var autoHideMenuItem = new ToolStripMenuItem(Loc.Get("auto_hide"))
+            _autoHideMenuItem = new ToolStripMenuItem(Loc.Get("auto_hide"))
             {
                 CheckOnClick = true,
                 Checked = CurrentSettings.AutoHideEnabled
             };
-            autoHideMenuItem.CheckedChanged += (s, e) =>
+            _autoHideMenuItem.CheckedChanged += (s, e) =>
             {
-                CurrentSettings.AutoHideEnabled = autoHideMenuItem.Checked;
+                CurrentSettings.AutoHideEnabled = _autoHideMenuItem.Checked;
                 SaveSettings();
-                if (autoHideMenuItem.Checked)
+                if (_autoHideMenuItem.Checked)
                 {
                     UpdateAutoHidePositions();
                     _autoHideTimer?.Start();
@@ -2901,7 +2965,7 @@ namespace OpenDock
                     RefreshDockIcons();
                 }
             };
-            contextMenu.Items.Add(autoHideMenuItem);
+            contextMenu.Items.Add(_autoHideMenuItem);
 
             var transitionSettingsMenu = new ToolStripMenuItem(Loc.Get("trans_settings"));
 
@@ -3312,16 +3376,31 @@ namespace OpenDock
 
         private void SyncStartupMenuState()
         {
-            if (_startupMenuItem == null)
-                return;
+            if (_startupMenuItem != null)
+            {
+                bool enabled = IsStartupEnabled();
+                if (_startupMenuItem.Checked != enabled)
+                {
+                    _isUpdatingStartupMenuState = true;
+                    _startupMenuItem.Checked = enabled;
+                    _isUpdatingStartupMenuState = false;
+                }
+            }
 
-            bool enabled = IsStartupEnabled();
-            if (_startupMenuItem.Checked == enabled)
-                return;
+            if (_showClockMenuItem != null)
+                _showClockMenuItem.Checked = CurrentSettings.ShowClock;
 
-            _isUpdatingStartupMenuState = true;
-            _startupMenuItem.Checked = enabled;
-            _isUpdatingStartupMenuState = false;
+            if (_separateRunningAppsMenuItem != null)
+                _separateRunningAppsMenuItem.Checked = CurrentSettings.SeparateRunningApps;
+
+            if (_autoHideMenuItem != null)
+                _autoHideMenuItem.Checked = CurrentSettings.AutoHideEnabled;
+
+            if (_showMediaMenuItem != null)
+                _showMediaMenuItem.Checked = CurrentSettings.ShowMediaController;
+
+            if (_dockBgShowMediaMenuItem != null)
+                _dockBgShowMediaMenuItem.Checked = CurrentSettings.ShowMediaController;
         }
 
         private void StartupMenuItem_CheckedChanged(object? sender, EventArgs e)
@@ -3442,8 +3521,8 @@ namespace OpenDock
                         if (wTitle.Contains(" - "))
                         {
                             var parts = wTitle.Split(new[] { " - " }, 2, StringSplitOptions.None);
-                            title = parts[0].Trim();
-                            artist = parts.Length > 1 ? parts[1].Trim() : "";
+                            artist = parts[0].Trim();
+                            title = parts.Length > 1 ? parts[1].Trim() : "";
                             playing = true;
                         }
                         else
@@ -3473,8 +3552,8 @@ namespace OpenDock
                             if (cleaned.Contains(" - "))
                             {
                                 var parts = cleaned.Split(new[] { " - " }, 2, StringSplitOptions.None);
-                                title = parts[0].Trim();
-                                artist = parts.Length > 1 ? parts[1].Trim() : "";
+                                artist = parts[0].Trim();
+                                title = parts.Length > 1 ? parts[1].Trim() : "";
                                 playing = true;
                             }
                             else
@@ -3530,6 +3609,9 @@ namespace OpenDock
             {
                 _mediaWidget = new IconWindow(200); // Wider canvas
                 _mediaWidget.MouseClick += MediaWidget_MouseClick;
+                _mediaWidget.MouseDown += MediaWidget_MouseDown;
+                _mediaWidget.MouseMove += MediaWidget_MouseMove;
+                _mediaWidget.MouseUp += MediaWidget_MouseUp;
             }
 
             // Draw the media controller
@@ -3606,6 +3688,14 @@ namespace OpenDock
                     DrawTriangle(g, btnBrush, btnStartX + 35, btnY, 5, false);
                 }
 
+                // Draw Minimize/Hide Button ("-") in top-right (Enlarged for better visibility)
+                using (var hidePen = new Pen(Color.FromArgb(210, 255, 255, 255), 2.0f) { StartCap = System.Drawing.Drawing2D.LineCap.Round, EndCap = System.Drawing.Drawing2D.LineCap.Round })
+                {
+                    int hx = width - 20;
+                    int hy = 8;
+                    g.DrawLine(hidePen, hx, hy, hx + 12, hy);
+                }
+
                 _mediaWidget.SetRawBitmap(bmp, width, height);
             }
 
@@ -3614,33 +3704,38 @@ namespace OpenDock
             string pos = CurrentSettings.DockPosition ?? "Bottom";
             int wx = 0, wy = 0;
 
-            if (pos.Equals("Bottom", StringComparison.OrdinalIgnoreCase))
+            if (_mediaCustomLocation.HasValue)
             {
-                wx = this.Left + (this.Width - width) / 2;
-                wy = this.Top - height - 10;
+                wx = _mediaCustomLocation.Value.X;
+                wy = _mediaCustomLocation.Value.Y;
             }
-            else if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
+            else
             {
-                wx = this.Left + (this.Width - width) / 2;
-                wy = this.Bottom + 10;
-            }
-            else if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
-            {
-                wx = this.Right + 10;
-                wy = this.Top + (this.Height - height) / 2;
-            }
-            else // Right
-            {
-                wx = this.Left - width - 10;
-                wy = this.Top + (this.Height - height) / 2;
+                if (pos.Equals("Bottom", StringComparison.OrdinalIgnoreCase))
+                {
+                    wx = this.Left + (this.Width - width) / 2;
+                    wy = this.Top - height - 10;
+                }
+                else if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
+                {
+                    wx = this.Left + (this.Width - width) / 2;
+                    wy = this.Bottom + 10;
+                }
+                else if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
+                {
+                    wx = this.Right + 10;
+                    wy = this.Top + (this.Height - height) / 2;
+                }
+                else // Right
+                {
+                    wx = this.Left - width - 10;
+                    wy = this.Top + (this.Height - height) / 2;
+                }
             }
 
             // Clamp positions to avoid spilling off screen boundaries
-            if (workspace != null)
-            {
-                wx = Math.Max(workspace.Left + 5, Math.Min(workspace.Right - width - 5, wx));
-                wy = Math.Max(workspace.Top + 5, Math.Min(workspace.Bottom - height - 5, wy));
-            }
+            wx = Math.Max(workspace.Left + 5, Math.Min(workspace.Right - width - 5, wx));
+            wy = Math.Max(workspace.Top + 5, Math.Min(workspace.Bottom - height - 5, wy));
 
             _mediaWidget.UpdateBounds(wx, wy, width);
             if (!_mediaWidget.Visible) _mediaWidget.Show(this);
@@ -3668,8 +3763,18 @@ namespace OpenDock
         {
             if (_mediaWidget == null) return;
             int relX = e.X;
+            int relY = e.Y;
             int width = 180;
             int btnStartX = width - 48;
+
+            // Check if top-right "-" minimize button was clicked (Enlarged hit-test area)
+            if (relX >= width - 24 && relX <= width - 4 && relY >= 2 && relY <= 18)
+            {
+                CurrentSettings.ShowMediaController = false;
+                SaveSettings();
+                _mediaWidget.Hide();
+                return;
+            }
 
             if (relX >= btnStartX && relX < btnStartX + 14)
                 MediaPrev();
@@ -3680,8 +3785,47 @@ namespace OpenDock
                 _isMediaPlayingActive = !_isMediaPlayingActive;
                 UpdateMediaWidget();
             }
-            else if (relX >= btnStartX + 28)
+            else if (relX >= btnStartX + 28 && relX < width - 24)
                 MediaNext();
+        }
+
+        private void MediaWidget_MouseDown(object? sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Right && _mediaWidget != null)
+            {
+                _isDraggingMedia = true;
+                _mediaDragStartMouse = Cursor.Position;
+                _mediaDragStartLocation = _mediaWidget.Location;
+            }
+        }
+
+        private void MediaWidget_MouseMove(object? sender, MouseEventArgs e)
+        {
+            if (_isDraggingMedia && _mediaWidget != null)
+            {
+                Point currentMouse = Cursor.Position;
+                int deltaX = currentMouse.X - _mediaDragStartMouse.X;
+                int deltaY = currentMouse.Y - _mediaDragStartMouse.Y;
+
+                int wx = _mediaDragStartLocation.X + deltaX;
+                int wy = _mediaDragStartLocation.Y + deltaY;
+
+                // Clamp within screen boundaries
+                Rectangle workspace = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
+                wx = Math.Max(workspace.Left + 5, Math.Min(workspace.Right - 180 - 5, wx));
+                wy = Math.Max(workspace.Top + 5, Math.Min(workspace.Bottom - 44 - 5, wy));
+
+                _mediaWidget.Location = new Point(wx, wy);
+                _mediaCustomLocation = _mediaWidget.Location;
+            }
+        }
+
+        private void MediaWidget_MouseUp(object? sender, MouseEventArgs e)
+        {
+            if (e.Button == MouseButtons.Right)
+            {
+                _isDraggingMedia = false;
+            }
         }
 
         private void MediaPlayPause() { keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 0, 0); keybd_event(VK_MEDIA_PLAY_PAUSE, 0, 2, 0); }
@@ -3690,6 +3834,7 @@ namespace OpenDock
 
         private void UpdateAutoHidePositions()
         {
+            if (_autoHideTimer != null && _autoHideProgress > 0.01f) return;
             _dockVisibleLocation = this.Location;
             string pos = CurrentSettings.DockPosition ?? "Bottom";
             if (pos.Equals("Bottom", StringComparison.OrdinalIgnoreCase))
@@ -3770,14 +3915,10 @@ namespace OpenDock
 
             this.Location = new Point(x, y);
 
-            // Offset all icon windows
-            int deltaX = x - _dockVisibleLocation.X;
-            int deltaY = y - _dockVisibleLocation.Y;
+            // Dynamically position all icon windows relative to the dock's current position to prevent any sliding offset/drift
             foreach (var item in _dockItems)
             {
-                int ix = item.OriginalLocation.X + deltaX;
-                int iy = item.OriginalLocation.Y + deltaY;
-                item.Owner.UpdateBounds(ix, iy, item.OriginalSize.Width);
+                UpdateSingleIconPosition(item);
             }
         }
 
