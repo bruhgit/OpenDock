@@ -42,6 +42,9 @@ namespace OpenDock
         public int MagnifiedIconSize { get; set; } = 64;
         public int MagnificationRange { get; set; } = 3;
         public bool ShowMediaController { get; set; } = true;
+        public int MediaControllerCustomX { get; set; } = -9999;
+        public int MediaControllerCustomY { get; set; } = -9999;
+        public bool TransitionMotionBlurEnabled { get; set; } = true;
     }
 
     public partial class Form1 : Form
@@ -902,6 +905,7 @@ namespace OpenDock
         private const float Gravity = 0.8f;
         private const float BounceSpring = -0.7f;
         private ContextMenuStrip _dockBgContextMenu = null!;
+        private ContextMenuStrip? _activeContextMenu = null;
         private bool _autoHideActive = false;
         private float _autoHideProgress = 0f;
         private System.Windows.Forms.Timer _autoHideTimer = null!;
@@ -1021,6 +1025,11 @@ namespace OpenDock
         private void UpdateDockPositionAndSize()
         {
             if (Screen.PrimaryScreen == null) return;
+
+            // Reset auto-hide progress and state so the visible position anchor can be correctly updated
+            _autoHideProgress = 0f;
+            _autoHideActive = false;
+
             Rectangle workspace = Screen.PrimaryScreen.WorkingArea;
 
             string pos = CurrentSettings.DockPosition ?? "Bottom";
@@ -1055,6 +1064,7 @@ namespace OpenDock
 
             ApplyDockRegion();
             UpdateAutoHidePositions();
+            EnableBlur();
         }
 
         private void ChangeDockPosition(string position)
@@ -1076,6 +1086,7 @@ namespace OpenDock
             if (e.Button == MouseButtons.Right)
             {
                 _dockBgContextMenu?.Show(this, e.Location);
+                _activeContextMenu = _dockBgContextMenu;
             }
         }
 
@@ -1197,6 +1208,10 @@ namespace OpenDock
         {
             this.SuspendLayout();
             LoadSettings();
+            if (CurrentSettings.MediaControllerCustomX != -9999 && CurrentSettings.MediaControllerCustomY != -9999)
+            {
+                _mediaCustomLocation = new Point(CurrentSettings.MediaControllerCustomX, CurrentSettings.MediaControllerCustomY);
+            }
             UpdateDockPositionAndSize();
             LoadPinnedApps();
             LoadDockOrder();
@@ -1606,9 +1621,9 @@ namespace OpenDock
 
                     Point screenLocation;
                     if (isVertical)
-                        screenLocation = new Point(this.Left + defaultOffset, this.Top + startOffset);
+                        screenLocation = new Point(_dockVisibleLocation.X + defaultOffset, _dockVisibleLocation.Y + startOffset);
                     else
-                        screenLocation = new Point(this.Left + startOffset, this.Top + defaultOffset);
+                        screenLocation = new Point(_dockVisibleLocation.X + startOffset, _dockVisibleLocation.Y + defaultOffset);
 
                     var iconWindow = new IconWindow(MaxIconSize);
                     iconWindow.SetIconImage(icon.ToBitmap(), baseSize, entry.DisplayName);
@@ -1643,7 +1658,9 @@ namespace OpenDock
                     {
                         if (e.Button == MouseButtons.Right)
                         {
-                            BuildDockItemContextMenu(animData).Show(iconWindow, e.Location);
+                            var menu = BuildDockItemContextMenu(animData);
+                            menu.Show(iconWindow, e.Location);
+                            _activeContextMenu = menu;
                             return;
                         }
 
@@ -1709,11 +1726,12 @@ namespace OpenDock
                     rbOffset = startOffset + 10;
                 }
 
+                // Calculate position relative to _dockVisibleLocation for auto-hide compatibility
                 Point rbLocation;
                 if (isVertical)
-                    rbLocation = new Point(this.Left + defaultOffset, this.Top + rbOffset);
+                    rbLocation = new Point(_dockVisibleLocation.X + defaultOffset, _dockVisibleLocation.Y + rbOffset);
                 else
-                    rbLocation = new Point(this.Left + rbOffset, this.Top + defaultOffset);
+                    rbLocation = new Point(_dockVisibleLocation.X + rbOffset, _dockVisibleLocation.Y + defaultOffset);
 
                 // Update startOffset so any calculations after this know the final layout boundary
                 startOffset = rbOffset;
@@ -1743,7 +1761,9 @@ namespace OpenDock
                 {
                     if (e.Button == MouseButtons.Right)
                     {
-                        BuildDockItemContextMenu(rbData).Show(rbIconWindow, e.Location);
+                        var menu = BuildDockItemContextMenu(rbData);
+                        menu.Show(rbIconWindow, e.Location);
+                        _activeContextMenu = menu;
                         return;
                     }
                     if (e.Button == MouseButtons.Left)
@@ -1785,11 +1805,12 @@ namespace OpenDock
             // Create Windows Start Button
             try
             {
+                // Calculate position relative to _dockVisibleLocation for auto-hide compatibility
                 Point screenLocation;
                 if (isVertical)
-                    screenLocation = new Point(this.Left + defaultOffset, this.Top + winButtonOffset);
+                    screenLocation = new Point(_dockVisibleLocation.X + defaultOffset, _dockVisibleLocation.Y + winButtonOffset);
                 else
-                    screenLocation = new Point(this.Left + winButtonOffset, this.Top + defaultOffset);
+                    screenLocation = new Point(_dockVisibleLocation.X + winButtonOffset, _dockVisibleLocation.Y + defaultOffset);
 
                 var winIconWindow = new IconWindow(MaxIconSize);
                 winIconWindow.SetIconImage(GetMenuLogoBitmap(baseSize), baseSize, "Menü");
@@ -1819,11 +1840,12 @@ namespace OpenDock
             // Create Task View Button (3 lines, modern Alt+Tab)
             try
             {
+                // Calculate position relative to _dockVisibleLocation for auto-hide compatibility
                 Point screenLocationTaskView;
                 if (isVertical)
-                    screenLocationTaskView = new Point(this.Left + defaultOffset, this.Top + taskViewButtonOffset);
+                    screenLocationTaskView = new Point(_dockVisibleLocation.X + defaultOffset, _dockVisibleLocation.Y + taskViewButtonOffset);
                 else
-                    screenLocationTaskView = new Point(this.Left + taskViewButtonOffset, this.Top + defaultOffset);
+                    screenLocationTaskView = new Point(_dockVisibleLocation.X + taskViewButtonOffset, _dockVisibleLocation.Y + defaultOffset);
 
                 var taskViewIconWindow = new IconWindow(MaxIconSize);
                 taskViewIconWindow.SetIconImage(GetTaskViewIconBitmap(baseSize), baseSize, "Görev Görünümü");
@@ -1849,6 +1871,12 @@ namespace OpenDock
                 _dockItems.Add(taskViewAnimData);
             }
             catch { }
+
+            // Immediately sync all newly created icon windows to the dock's current position (e.g. if the dock is currently hidden or sliding)
+            foreach (var item in _dockItems)
+            {
+                UpdateSingleIconPosition(item);
+            }
 
             this.Invalidate();
         }
@@ -3121,9 +3149,27 @@ namespace OpenDock
             };
             transitionSettingsMenu.DropDownItems.Add(outwardItem);
 
+            // 11. Motion Blur Settings
+            var motionBlurItem = new ToolStripMenuItem(Loc.Get("motion_blur")) { CheckOnClick = true, Checked = CurrentSettings.TransitionMotionBlurEnabled };
+            motionBlurItem.CheckedChanged += (s, e) => {
+                CurrentSettings.TransitionMotionBlurEnabled = motionBlurItem.Checked;
+                SaveSettings();
+            };
+            transitionSettingsMenu.DropDownItems.Add(motionBlurItem);
+
             contextMenu.Items.Add(transitionSettingsMenu);
 
             contextMenu.Opening += (s, e) => SyncStartupMenuState();
+            contextMenu.Items.Add("-");
+
+            var aboutItem = new ToolStripMenuItem(Loc.Get("about"));
+            aboutItem.Click += (s, e) =>
+            {
+                var aboutForm = new AboutForm($"OpenDock v5.2.1", Loc.Get("about_msg"), Loc.Get("dialog_close"));
+                aboutForm.ShowDialog(this);
+            };
+            contextMenu.Items.Add(aboutItem);
+
             contextMenu.Items.Add("-");
             contextMenu.Items.Add(Loc.Get("exit"), null, (s, e) =>
             {
@@ -3825,6 +3871,12 @@ namespace OpenDock
             if (e.Button == MouseButtons.Right)
             {
                 _isDraggingMedia = false;
+                if (_mediaCustomLocation.HasValue)
+                {
+                    CurrentSettings.MediaControllerCustomX = _mediaCustomLocation.Value.X;
+                    CurrentSettings.MediaControllerCustomY = _mediaCustomLocation.Value.Y;
+                    SaveSettings();
+                }
             }
         }
 
@@ -3893,6 +3945,11 @@ namespace OpenDock
                 {
                     if (_autoHideProgress < 1f)
                     {
+                        if (_activeContextMenu != null)
+                        {
+                            _activeContextMenu.Close();
+                            _activeContextMenu = null;
+                        }
                         _autoHideProgress = Math.Min(1f, _autoHideProgress + 0.06f);
                         ApplyAutoHidePosition();
                     }
@@ -3941,6 +3998,11 @@ namespace OpenDock
             }
             else
             {
+                if (_activeContextMenu != null)
+                {
+                    _activeContextMenu.Close();
+                    _activeContextMenu = null;
+                }
                 foreach (var item in _dockItems)
                 {
                     if (item.Owner.Visible)
@@ -7556,6 +7618,7 @@ namespace OpenDock
             private float _targetAngle = 0f;
             private bool _animating = false;
             private Action? _onAnimComplete;
+            private readonly Queue<float> _angleHistory = new Queue<float>();
 
             public CubeTransitionForm(Bitmap?[] rawBitmaps, List<Bitmap>[] appIcons, int currentIndex, Form1 mainForm)
             {
@@ -7821,11 +7884,16 @@ namespace OpenDock
                         _animTimer.Dispose();
                         _animTimer = null;
                         _animating = false;
+                        _angleHistory.Clear();
                         this.Invalidate();
                         _onAnimComplete?.Invoke();
                     }
                     else
                     {
+                        _angleHistory.Enqueue(_angle);
+                        if (_angleHistory.Count > 3)
+                            _angleHistory.Dequeue();
+
                         _angle += diff * Form1.CurrentSettings.TransitionDeceleration;
                         this.Invalidate();
                     }
@@ -7902,6 +7970,10 @@ namespace OpenDock
                 float stepAngle = 360f / N;
                 float dirSign = Form1.CurrentSettings.TransitionOutwardFacing ? -1f : 1f;
 
+                var rtRect = new RectangleF(0, 0, _renderTarget.Width, _renderTarget.Height);
+                float AR = rtRect.Width / rtRect.Height;
+                float radius = AR / (float)Math.Tan(Math.PI / N);
+
                 using (var rtg = Graphics.FromImage(_renderTarget))
                 {
                     rtg.Clear(Color.Transparent);
@@ -7909,11 +7981,6 @@ namespace OpenDock
                     rtg.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
                     rtg.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.Half;
                     rtg.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighQuality;
-
-                    var rtRect = new RectangleF(0, 0, _renderTarget.Width, _renderTarget.Height);
-
-                    float AR = rtRect.Width / rtRect.Height;
-                    float radius = AR / (float)Math.Tan(Math.PI / N);
 
                     var slicesList = new List<SliceInfo>(120);
 
@@ -7947,6 +8014,51 @@ namespace OpenDock
                 g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                 g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
                 g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver;
+
+                // Render motion blur frames from history
+                if (Form1.CurrentSettings.TransitionMotionBlurEnabled && _angleHistory.Count > 1)
+                {
+                    int i = 0;
+                    foreach (float prevAngle in _angleHistory)
+                    {
+                        float alpha = 0.08f + 0.08f * (i / (float)_angleHistory.Count);
+                        
+                        using (var tempBmp = new Bitmap(_renderTarget.Width, _renderTarget.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb))
+                        using (var tempG = Graphics.FromImage(tempBmp))
+                        {
+                            tempG.Clear(Color.Transparent);
+                            tempG.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
+                            tempG.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                            
+                            var tempSlices = new List<SliceInfo>(120);
+                            for (int k = 0; k < _totalCount; k++)
+                            {
+                                float faceAngle = (k - _currentIndex) * stepAngle + dirSign * prevAngle;
+                                float normAngle = faceAngle % 360f;
+                                if (normAngle > 180f) normAngle -= 360f;
+                                if (normAngle < -180f) normAngle += 360f;
+                                if (Math.Abs(normAngle) < 90f + 10f)
+                                {
+                                    PopulateSlices(tempSlices, _faces[k], rtRect, faceAngle, radius, N);
+                                }
+                            }
+                            tempSlices.Sort((a, b) => b.Depth.CompareTo(a.Depth));
+                            foreach (var slice in tempSlices)
+                            {
+                                tempG.DrawImage(slice.Bmp, slice.DestRect, slice.SrcRect, GraphicsUnit.Pixel);
+                            }
+                            
+                            var cm = new System.Drawing.Imaging.ColorMatrix { Matrix33 = alpha };
+                            using (var ia = new System.Drawing.Imaging.ImageAttributes())
+                            {
+                                ia.SetColorMatrix(cm);
+                                g.DrawImage(tempBmp, new Rectangle((int)cubeX, (int)cubeY, (int)cubeW, (int)cubeH), 0, 0, tempBmp.Width, tempBmp.Height, GraphicsUnit.Pixel, ia);
+                            }
+                        }
+                        i++;
+                    }
+                }
+
                 g.DrawImage(_renderTarget, cubeX, cubeY, cubeW, cubeH);
 
                 // 3. Draw sharp desktop name pills directly on screen (2D space, locked to center)
@@ -8141,4 +8253,165 @@ namespace OpenDock
             }
         }
     }
+
+namespace OpenDock
+{
+    public partial class Form1
+    {
+        public class AboutForm : Form
+        {
+            private readonly string _title;
+            private readonly string _msg;
+            private readonly string _closeText;
+
+            public AboutForm(string title, string msg, string closeText)
+            {
+                _title = title;
+                _msg = msg;
+                _closeText = closeText;
+
+                this.Size = new Size(400, 240);
+                this.FormBorderStyle = FormBorderStyle.None;
+                this.ShowInTaskbar = false;
+                this.TopMost = true;
+                this.StartPosition = FormStartPosition.CenterScreen;
+                this.BackColor = Color.FromArgb(20, 20, 22);
+
+                // Re-use rounded corners for AboutForm region
+                this.Region = new Region(RoundedRect(new Rectangle(0, 0, this.Width, this.Height), 12));
+
+                // Add close button
+                var closeBtn = new Button
+                {
+                    Text = _closeText,
+                    Size = new Size(110, 34),
+                    Location = new Point((this.Width - 110) / 2, this.Height - 50),
+                    FlatStyle = FlatStyle.Flat,
+                    Font = new Font("Segoe UI Semibold", 9.5f, FontStyle.Bold)
+                };
+                closeBtn.FlatAppearance.BorderSize = 0; // Handled by custom paint
+                closeBtn.Click += (s, e) => this.Close();
+
+                // Custom paint to avoid Windows theme overrides and force pure white text color
+                closeBtn.Paint += (s, paintEvt) =>
+                {
+                    var btn = (Button)s!;
+                    var graphics = paintEvt.Graphics;
+                    graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+
+                    // Detect mouse states
+                    Point clientMouse = btn.PointToClient(Cursor.Position);
+                    bool isHovered = btn.ClientRectangle.Contains(clientMouse);
+                    bool isPressed = isHovered && (Control.MouseButtons == MouseButtons.Left);
+
+                    Color bg = isPressed ? Color.FromArgb(80, 255, 255, 255)
+                             : isHovered ? Color.FromArgb(50, 255, 255, 255)
+                             : Color.FromArgb(20, 255, 255, 255);
+
+                    using (var bgBrush = new SolidBrush(bg))
+                    {
+                        graphics.FillRectangle(bgBrush, btn.ClientRectangle);
+                    }
+
+                    using (var borderPen = new Pen(Color.FromArgb(80, 255, 255, 255), 1f))
+                    {
+                        graphics.DrawRectangle(borderPen, 0, 0, btn.Width - 1, btn.Height - 1);
+                    }
+
+                    graphics.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+                    using (var sf = new StringFormat
+                    {
+                        Alignment = StringAlignment.Center,
+                        LineAlignment = StringAlignment.Center
+                    })
+                    using (var textBrush = new SolidBrush(Color.White))
+                    {
+                        graphics.DrawString(btn.Text, btn.Font, textBrush, btn.ClientRectangle, sf);
+                    }
+                };
+
+                // Trigger repaint on hover changes
+                closeBtn.MouseEnter += (s, e) => closeBtn.Invalidate();
+                closeBtn.MouseLeave += (s, e) => closeBtn.Invalidate();
+                closeBtn.MouseDown += (s, e) => closeBtn.Invalidate();
+                closeBtn.MouseUp += (s, e) => closeBtn.Invalidate();
+
+                this.Controls.Add(closeBtn);
+
+                this.Load += (s, e) => ApplyBlur();
+            }
+
+            private void ApplyBlur()
+            {
+
+                int cornerPref = 2; // DWMWCP_ROUND (rounds windows on Windows 11)
+                Form1.DwmSetWindowAttribute(this.Handle, 33, ref cornerPref, sizeof(int));
+
+                var accent = new Form1.AccentPolicy
+                {
+                    AccentState = Form1.AccentState.ACCENT_ENABLE_ACRYLICBLURBEHIND,
+                    GradientColor = 0x60101012
+                };
+                var accentStructSize = Marshal.SizeOf(accent);
+                var accentPtr = Marshal.AllocHGlobal(accentStructSize);
+                Marshal.StructureToPtr(accent, accentPtr, false);
+
+                var data = new Form1.WindowCompositionAttributeData
+                {
+                    Attribute = Form1.WindowCompositionAttribute.WCA_ACCENT_POLICY,
+                    SizeOfData = accentStructSize,
+                    Data = accentPtr
+                };
+
+                Form1.SetWindowCompositionAttribute(this.Handle, ref data);
+                Marshal.FreeHGlobal(accentPtr);
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                var g = e.Graphics;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
+
+                var rect = new Rectangle(0, 0, this.Width - 1, this.Height - 1);
+                var glassColor = Color.FromArgb(74, 24, 24, 26);
+                var borderPen = new Pen(Color.FromArgb(82, 255, 255, 255), 1f);
+
+                using (var path = RoundedRect(rect, 12))
+                using (var fillBrush = new SolidBrush(glassColor))
+                {
+                    g.FillPath(fillBrush, path);
+                    g.DrawPath(borderPen, path);
+                }
+
+                // Draw Title
+                using (var titleFont = new Font("Segoe UI", 16f, FontStyle.Bold))
+                using (var brush = new SolidBrush(Color.White))
+                {
+                    g.DrawString(_title, titleFont, brush, 20, 20);
+                }
+
+                // Draw Message / Body text
+                using (var bodyFont = new Font("Segoe UI", 9.5f))
+                using (var brush = new SolidBrush(Color.FromArgb(220, 220, 220)))
+                {
+                    var textRect = new RectangleF(20, 60, this.Width - 40, this.Height - 120);
+                    g.DrawString(_msg, bodyFont, brush, textRect);
+                }
+            }
+
+            private static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle bounds, int radius)
+            {
+                var path = new System.Drawing.Drawing2D.GraphicsPath();
+                int d = radius * 2;
+                path.AddArc(bounds.X, bounds.Y, d, d, 180, 90);
+                path.AddArc(bounds.Right - d, bounds.Y, d, d, 270, 90);
+                path.AddArc(bounds.Right - d, bounds.Bottom - d, d, d, 0, 90);
+                path.AddArc(bounds.X, bounds.Bottom - d, d, d, 90, 90);
+                path.CloseFigure();
+                return path;
+            }
+        }
+    }
+}
 

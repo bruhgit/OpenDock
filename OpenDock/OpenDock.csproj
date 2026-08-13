@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -12,9 +12,9 @@
     <PackageIcon>icon.png</PackageIcon>
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <Copyright>Copyright (C) 2026 omerdev</Copyright>
-    <Version>1.0.0</Version>
-    <AssemblyVersion>1.0.0</AssemblyVersion>
-    <FileVersion>1.0.0</FileVersion>
+    <Version>5.2.1</Version>
+    <AssemblyVersion>5.2.1</AssemblyVersion>
+    <FileVersion>5.2.1</FileVersion>
   </PropertyGroup>
 
   <ItemGroup>

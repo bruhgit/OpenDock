@@ -29,7 +29,7 @@ namespace OpenDock
                 {"gaps_padding", "Gaps / Slice Overlap Margin"}, {"switch_delay", "Transition Switch Delay"},
                 {"bg_stars", "Background Stars"}, {"show_stars", "Show Stars"}, {"stars_count", "Stars Count"},
                 {"bg_image", "Background Image"}, {"choose_image", "Choose Image..."}, {"reset_gradient", "Reset to Default Gradient"},
-                {"trans_outward", "Outward Facing (Convex)"},
+                {"trans_outward", "Outward Facing (Convex)"}, {"motion_blur", "Motion Blur"},
                 {"run_startup", "Run at Startup"}, {"exit", "Exit"}, {"help_text", "Drag and release to rotate • ESC to cancel"},
                 {"desktop", "Desktop"}, {"dialog_ok", "OK"}, {"dialog_cancel", "Cancel"},
                 {"title_fov", "Zoom / FOV Settings"}, {"prompt_fov", "Enter camera zoom factor (e.g. 2.8):"},
@@ -41,7 +41,10 @@ namespace OpenDock
                 {"title_delay", "Switch Delay Settings"}, {"prompt_delay", "Enter desktop transition switch delay (ms, e.g. 100):"},
                 {"title_stars", "Stars Count Settings"}, {"prompt_stars", "Enter stars count (0 - 500):"},
                 {"title_opacity", "Dock Opacity Settings"}, {"prompt_opacity", "Enter opacity value (0 - 255):"},
-                {"title_size", "Icon Size Settings"}, {"prompt_size", "Enter icon pixel size (16 - 128):"}
+                {"title_size", "Icon Size Settings"}, {"prompt_size", "Enter icon pixel size (16 - 128):"},
+                {"about", "About OpenDock"},
+                {"about_msg", "A professional desktop enhancement utility featuring interactive virtual desktop cube transitions, a persistent media controller, and seamless recycle bin integration.\n\n© 2026 OpenDock. Licensed under the MIT License."},
+                {"dialog_close", "Close"}
             };
 
             // 2. Turkish (tr)
@@ -60,7 +63,7 @@ namespace OpenDock
                 {"gaps_padding", "Gaps / Dilim Çakışma Payı"}, {"switch_delay", "Geçiş Tetikleme Gecikmesi"},
                 {"bg_stars", "Arka Plan Yıldızları"}, {"show_stars", "Yıldızları Göster"}, {"stars_count", "Yıldız Sayısı"},
                 {"bg_image", "Arka Plan Görseli"}, {"choose_image", "Görsel Seç..."}, {"reset_gradient", "Varsayılan Gradient Yap"},
-                {"trans_outward", "Dış Yüze Bak (Convex)"},
+                {"trans_outward", "Dış Yüze Bak (Convex)"}, {"motion_blur", "Hareket Bulanıklığı (Motion Blur)"},
                 {"run_startup", "Başlangıçta çalıştır"}, {"exit", "Çıkış"}, {"help_text", "Döndürmek için sürükleyip bırakın • İptal etmek için ESC"},
                 {"desktop", "Masaüstü"}, {"dialog_ok", "Tamam"}, {"dialog_cancel", "İptal"},
                 {"title_fov", "Zoom / FOV Ayarı"}, {"prompt_fov", "Kamera zoom faktörünü girin (örn. 2.8):"},
@@ -72,7 +75,10 @@ namespace OpenDock
                 {"title_delay", "Geçiş Gecikmesi Ayarı"}, {"prompt_delay", "Masaüstü geçişler arası gecikmeyi girin (ms, örn. 100):"},
                 {"title_stars", "Yıldız Sayısı Ayarı"}, {"prompt_stars", "Yıldız sayısını girin (0 - 500):"},
                 {"title_opacity", "Dock Opaklık Ayarı"}, {"prompt_opacity", "Opaklık değerini girin (0 - 255):"},
-                {"title_size", "İkon Boyutu Ayarı"}, {"prompt_size", "İkon piksel boyutunu girin (16 - 128):"}
+                {"title_size", "İkon Boyutu Ayarı"}, {"prompt_size", "İkon piksel boyutunu girin (16 - 128):"},
+                {"about", "OpenDock Hakkında"},
+                {"about_msg", "İnteraktif masaüstü küp geçişleri, medya denetleyicisi ve geri dönüşüm kutusu entegrasyonuna sahip profesyonel masaüstü dock aracı.\n\n© 2026 OpenDock. MIT Lisansı ile lisanslanmıştır."},
+                {"dialog_close", "Kapat"}
             };
 
             // 3. Spanish (es)
