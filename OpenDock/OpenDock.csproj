@@ -12,20 +12,15 @@
     <PackageIcon>icon.png</PackageIcon>
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <Copyright>Copyright (C) 2026 omerdev</Copyright>
-    <Version>5.2.1</Version>
-    <AssemblyVersion>5.2.1</AssemblyVersion>
-    <FileVersion>5.2.1</FileVersion>
+    <Version>5.2.2</Version>
+    <FileVersion>5.2.2</FileVersion>
+    <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
     <Content Include="icon.ico" />
   </ItemGroup>
 
-  <ItemGroup>
-    <None Include="dock_pins.json">
-      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
-    </None>
-  </ItemGroup>
 
   <ItemGroup>
     <None Update="icon.png">
