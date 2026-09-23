@@ -4,17 +4,54 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Drawing;
 using System.Linq;
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Text.Json;
+using System.Text.Json.Serialization;
 using System.Windows.Forms;
 using Microsoft.Win32;
 
 namespace OpenDock
 {
+    internal sealed class ArgbColorJsonConverter : JsonConverter<int>
+    {
+        public override int Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+        {
+            if (reader.TokenType == JsonTokenType.Number)
+            {
+                if (reader.TryGetInt32(out int intVal)) return intVal;
+                if (reader.TryGetInt64(out long longVal)) return (int)longVal;
+                if (reader.TryGetUInt32(out uint uintVal)) return (int)uintVal;
+                if (reader.TryGetDouble(out double dblVal)) return (int)dblVal;
+            }
+            else if (reader.TokenType == JsonTokenType.String)
+            {
+                string? str = reader.GetString();
+                if (!string.IsNullOrWhiteSpace(str))
+                {
+                    if (long.TryParse(str, out long parsedLong)) return (int)parsedLong;
+                    if (str.StartsWith("#"))
+                    {
+                        try { return ColorTranslator.FromHtml(str).ToArgb(); } catch { }
+                    }
+                }
+            }
+            return 0;
+        }
+
+        public override void Write(Utf8JsonWriter writer, int value, JsonSerializerOptions options)
+        {
+            writer.WriteNumberValue(value);
+        }
+    }
+
     internal sealed class OpenDockSettings
     {
+        [JsonConverter(typeof(ArgbColorJsonConverter))]
         public int DockColorArgb { get; set; } = Color.FromArgb(175, 24, 24, 24).ToArgb();
+        [JsonConverter(typeof(ArgbColorJsonConverter))]
         public int MenuColorArgb { get; set; } = Color.FromArgb(175, 24, 24, 24).ToArgb();
+        [JsonConverter(typeof(ArgbColorJsonConverter))]
         public int SearchColorArgb { get; set; } = Color.FromArgb(45, 45, 45).ToArgb();
         public string MenuLogoPath { get; set; } = "";
         public string DockPosition { get; set; } = "Bottom";
@@ -28,6 +65,7 @@ namespace OpenDock
         public int TransitionSlicesCount { get; set; } = 50;
 
         public int DockIconSize { get; set; } = 32;
+        public int DockLength { get; set; } = 640;
         public int DockBackgroundAlpha { get; set; } = 175;
         public bool TransitionShowStars { get; set; } = true;
         public int TransitionStarsCount { get; set; } = 20;
@@ -40,11 +78,12 @@ namespace OpenDock
         public bool ShowRecycleBin { get; set; } = true;
         public bool MagnificationEnabled { get; set; } = true;
         public int MagnifiedIconSize { get; set; } = 64;
-        public int MagnificationRange { get; set; } = 3;
+        public int MagnificationRange { get; set; } = 2;
         public bool ShowMediaController { get; set; } = true;
         public int MediaControllerCustomX { get; set; } = -9999;
         public int MediaControllerCustomY { get; set; } = -9999;
         public bool TransitionMotionBlurEnabled { get; set; } = true;
+        public string MinimizeEffect { get; set; } = "Genie";
     }
 
     public partial class Form1 : Form
@@ -62,7 +101,91 @@ namespace OpenDock
         private static extern bool ShowWindow(IntPtr hWnd, int nCmdShow);
 
         [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool IsIconic(IntPtr hWnd);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool PrintWindow(IntPtr hWnd, IntPtr hdcBlt, uint nFlags);
+
+        private delegate void WinEventDelegate(
+            IntPtr hWinEventHook,
+            uint eventType,
+            IntPtr hWnd,
+            int idObject,
+            int idChild,
+            uint eventThread,
+            uint eventTime);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SetWinEventHook(
+            uint eventMin,
+            uint eventMax,
+            IntPtr hmodWinEventProc,
+            WinEventDelegate lpfnWinEventProc,
+            uint idProcess,
+            uint idThread,
+            uint flags);
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnhookWinEvent(IntPtr hWinEventHook);
+
+        private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        private static extern IntPtr SetWindowsHookEx(
+            int idHook,
+            LowLevelMouseProc lpfn,
+            IntPtr hMod,
+            uint dwThreadId);
+
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr WindowFromPoint(NativePoint point);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr GetAncestor(IntPtr hWnd, uint flags);
+
+        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr SendMessageTimeout(
+            IntPtr hWnd,
+            uint message,
+            IntPtr wParam,
+            IntPtr lParam,
+            uint flags,
+            uint timeout,
+            out IntPtr result);
+
+        [DllImport("kernel32.dll", CharSet = CharSet.Auto, SetLastError = true)]
+        private static extern IntPtr GetModuleHandle(string? moduleName);
+
+        private const uint EVENT_SYSTEM_MINIMIZESTART = 0x0016;
+        private const uint WINEVENT_OUTOFCONTEXT = 0x0000;
+        private const uint WINEVENT_SKIPOWNPROCESS = 0x0002;
+        private const int WH_MOUSE_LL = 14;
+        private const int WM_LBUTTONDOWN = 0x0201;
+        private const uint WM_NCHITTEST = 0x0084;
+        private const int HTMINBUTTON = 8;
+        private const uint GA_ROOT = 2;
+        private const uint SMTO_ABORTIFHUNG = 0x0002;
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct LowLevelMouseHookData
+        {
+            public NativePoint Point;
+            public uint MouseData;
+            public uint Flags;
+            public uint Time;
+            public UIntPtr ExtraInfo;
+        }
+
 
         [DllImport("shell32.dll", CharSet = CharSet.Auto)]
         internal static extern IntPtr SHGetFileInfo(string pszPath, uint dwFileAttributes, ref SHFILEINFO psfi, uint cbFileInfo, uint uFlags);
@@ -174,6 +297,29 @@ namespace OpenDock
         [return: MarshalAs(UnmanagedType.Bool)]
         private static extern bool GetWindowRect(IntPtr hWnd, out RECT lpRect);
 
+        [DllImport("user32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetWindowPlacement(IntPtr hWnd, ref WINDOWPLACEMENT lpwndpl);
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativePoint
+        {
+            public int X;
+            public int Y;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct WINDOWPLACEMENT
+        {
+            public uint Length;
+            public uint Flags;
+            public uint ShowCommand;
+            public NativePoint MinPosition;
+            public NativePoint MaxPosition;
+            public RECT NormalPosition;
+            public RECT Device;
+        }
+
         [StructLayout(LayoutKind.Sequential)]
         private struct RECT
         {
@@ -182,6 +328,7 @@ namespace OpenDock
             public int Right;
             public int Bottom;
         }
+
 
         private static string GetWindowTitle(IntPtr hWnd)
         {
@@ -204,35 +351,29 @@ namespace OpenDock
         }
 
         private static Icon? _genericAppIcon;
-        private static readonly object _genericAppIconLock = new();
         public static Icon GetGenericApplicationIcon()
         {
-            lock (_genericAppIconLock)
+            if (_genericAppIcon != null) return _genericAppIcon;
+
+            try
             {
-                if (_genericAppIcon == null)
+                SHFILEINFO shinfo = new SHFILEINFO();
+                const uint SHGFI_USEFILEATTRIBUTES = 0x000000010;
+                const uint SHGFI_ICON = 0x000000100;
+                const uint FILE_ATTRIBUTE_NORMAL = 0x80;
+
+                IntPtr hImg = SHGetFileInfo(".exe", FILE_ATTRIBUTE_NORMAL, ref shinfo, (uint)Marshal.SizeOf(shinfo), SHGFI_ICON | SHGFI_USEFILEATTRIBUTES);
+
+                if (shinfo.hIcon != IntPtr.Zero)
                 {
-                    try
-                    {
-                        SHFILEINFO shinfo = new SHFILEINFO();
-                        const uint SHGFI_USEFILEATTRIBUTES = 0x000000010;
-                        const uint SHGFI_ICON = 0x000000100;
-                        const uint FILE_ATTRIBUTE_NORMAL = 0x80;
-
-                        IntPtr hImg = SHGetFileInfo(".exe", FILE_ATTRIBUTE_NORMAL, ref shinfo, (uint)Marshal.SizeOf(shinfo), SHGFI_ICON | SHGFI_USEFILEATTRIBUTES);
-
-                        if (shinfo.hIcon != IntPtr.Zero)
-                        {
-                            _genericAppIcon = (Icon)Icon.FromHandle(shinfo.hIcon).Clone();
-                            DestroyIcon(shinfo.hIcon);
-                        }
-                    }
-                    catch { }
-
-                    _genericAppIcon ??= (Icon)SystemIcons.WinLogo.Clone();
+                    _genericAppIcon = (Icon)Icon.FromHandle(shinfo.hIcon).Clone();
+                    DestroyIcon(shinfo.hIcon);
+                    return _genericAppIcon;
                 }
-
-                return (Icon)_genericAppIcon.Clone();
             }
+            catch { }
+
+            return _genericAppIcon = SystemIcons.WinLogo;
         }
 
         private static string GetProcessFilePath(Process proc)
@@ -535,19 +676,32 @@ namespace OpenDock
             }
 
             private readonly int _canvasSize;
-            private bool _showIndicator = false;
-            private int _lastX = int.MinValue;
-            private int _lastY = int.MinValue;
-            private int _lastSize = -1;
-            private bool _lastShowIndicator = false;
-            private bool _lastShowText = false;
-            private float _lastScrollOffset = -9999f;
+            private int _indicatorCount;
+            private bool _showLabel = false;
+            private int _lastRenderedIconSize = -1;
+            private int _lastRenderedIndicatorCount = -1;
+            private bool _lastRenderedShowText;
+            private string _lastRenderedAppName = "";
 
             [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
             public bool ShowIndicator
             {
-                get => _showIndicator;
-                set { _showIndicator = value; }
+                get => _indicatorCount > 0;
+                set { _indicatorCount = value ? Math.Max(1, _indicatorCount) : 0; }
+            }
+
+            [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+            public int IndicatorCount
+            {
+                get => _indicatorCount;
+                set => _indicatorCount = Math.Max(0, value);
+            }
+
+            [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+            public bool ShowLabel
+            {
+                get => _showLabel;
+                set => _showLabel = value;
             }
 
             public IconWindow(int canvasSize)
@@ -567,7 +721,7 @@ namespace OpenDock
                 _originalBitmap = (Bitmap)bmp.Clone();
                 _bitmap?.Dispose();
                 _bitmap = (Bitmap)bmp.Clone();
-                _lastSize = -1;
+                _lastRenderedIconSize = -1;
                 Size = new Size(width, height);
                 Redraw(this.Left, this.Top);
             }
@@ -577,7 +731,7 @@ namespace OpenDock
                 if (_originalBitmap == null || size <= 0) return;
 
                 bool isRaw = (_originalBitmap.Width != _originalBitmap.Height);
-                int indicatorSpace = (!isRaw && _showIndicator) ? 7 : 0; // Extra height for the dot below the icon
+                int indicatorSpace = (!isRaw && _indicatorCount > 0) ? 7 : 0;
                 int windowWidth = isRaw ? _originalBitmap.Width : size;
                 int windowHeight = (isRaw ? _originalBitmap.Height : size) + indicatorSpace;
                 int drawWidth = isRaw ? _originalBitmap.Width : size;
@@ -587,7 +741,7 @@ namespace OpenDock
                 int windowX = x;
                 int windowY = y;
 
-                bool showText = (!isRaw && size >= 48 && !string.IsNullOrEmpty(_appName));
+                bool showText = _showLabel && !isRaw && !string.IsNullOrEmpty(_appName);
 
                 if (showText)
                 {
@@ -603,58 +757,64 @@ namespace OpenDock
                     _scrollOffset = 0f;
                 }
 
-                bool isScrolling = showText && _scrollOffset > 0f;
-                if (!isScrolling &&
-                    windowX == _lastX &&
-                    windowY == _lastY &&
-                    size == _lastSize &&
-                    _showIndicator == _lastShowIndicator &&
-                    showText == _lastShowText &&
-                    _bitmap != null)
+                bool canReuseRenderedBitmap = _bitmap != null &&
+                    _lastRenderedIconSize == size &&
+                    _lastRenderedIndicatorCount == _indicatorCount &&
+                    _lastRenderedShowText == showText &&
+                    _lastRenderedAppName == _appName;
+                if (canReuseRenderedBitmap)
                 {
+                    SetWindowPos(Handle, HWND_TOPMOST, windowX, windowY, windowWidth, windowHeight, SWP_NOACTIVATE);
                     return;
                 }
-
-                _lastX = windowX;
-                _lastY = windowY;
-                _lastSize = size;
-                _lastShowIndicator = _showIndicator;
-                _lastShowText = showText;
-                _lastScrollOffset = _scrollOffset;
 
                 var scaled = new Bitmap(windowWidth, windowHeight, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
                 using (var g = Graphics.FromImage(scaled))
                 {
-                    g.Clear(Color.FromArgb(1, 0, 0, 0));
+                    g.Clear(Color.Transparent);
                     g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                     g.TextRenderingHint = System.Drawing.Text.TextRenderingHint.ClearTypeGridFit;
                     g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
-                    // Draw the icon
-                    g.DrawImage(_originalBitmap, drawX, drawY, drawWidth, drawHeight);
-
-                    // Draw indicator line below icon for open applications
-                    if (_showIndicator && !isRaw)
+                    // macOS benzeri hafif kenar ışığı: alpha kanalını koruyan iki düşük
+                    // yoğunluklu katman ikonun arkasına çizilir. Ham medya widget'larına
+                    // uygulanmaz; böylece albüm kapağı/video gibi içerikler parlamaz.
+                    if (isRaw)
                     {
-                        float dotWidth = Math.Max(8f, size * 0.35f);
-                        float dotHeight = 3f;
-                        float dotX = drawX + (drawWidth - dotWidth) / 2f;
-                        float dotY = drawY + drawHeight + 3f;
+                        g.DrawImage(_originalBitmap, drawX, drawY, drawWidth, drawHeight);
+                    }
+                    else
+                    {
+                        DrawIconWithEdgeGlow(
+                            g,
+                            _originalBitmap,
+                            new RectangleF(drawX, drawY, drawWidth, drawHeight));
+                    }
 
-                        using (var path = new System.Drawing.Drawing2D.GraphicsPath())
+                    // Her açık pencere için macOS benzeri ayrı bir nokta çiz.
+                    if (_indicatorCount > 0 && !isRaw)
+                    {
+                        int visibleCount = Math.Min(_indicatorCount, 10);
+                        float gap = 2f;
+                        float maximumWidth = Math.Max(8f, size * 0.72f);
+                        float dotSize = Math.Clamp(
+                            (maximumWidth - gap * (visibleCount - 1)) / visibleCount,
+                            2f,
+                            4f);
+                        float totalWidth = dotSize * visibleCount + gap * (visibleCount - 1);
+                        float dotX = drawX + (size - totalWidth) / 2f;
+                        float dotY = drawY + size + 2f;
+                        using (var dotBrush = new SolidBrush(Color.FromArgb(230, 255, 255, 255)))
                         {
-                            path.AddArc(dotX, dotY, dotHeight, dotHeight, 90, 180);
-                            path.AddArc(dotX + dotWidth - dotHeight, dotY, dotHeight, dotHeight, 270, 180);
-                            path.CloseFigure();
-
-                            using (var brush = new SolidBrush(Color.FromArgb(240, 255, 255, 255)))
+                            for (int index = 0; index < visibleCount; index++)
                             {
-                                g.FillPath(brush, path);
+                                float dotPositionX = dotX + index * (dotSize + gap);
+                                g.FillEllipse(dotBrush, dotPositionX, dotY, dotSize, dotSize);
                             }
                         }
                     }
 
-                    // Draw tooltip bubble on hover (when size is magnified and app name is available)
+                    // Draw the application name above the icon
                     if (showText)
                     {
                         using (var font = new Font("Segoe UI", 8f, FontStyle.Bold))
@@ -720,6 +880,10 @@ namespace OpenDock
 
                 _bitmap?.Dispose();
                 _bitmap = scaled;
+                _lastRenderedIconSize = size;
+                _lastRenderedIndicatorCount = _indicatorCount;
+                _lastRenderedShowText = showText;
+                _lastRenderedAppName = _appName;
 
                 SetWindowPos(Handle, HWND_TOPMOST, windowX, windowY, windowWidth, windowHeight, SWP_NOACTIVATE);
                 Redraw(windowX, windowY);
@@ -732,6 +896,7 @@ namespace OpenDock
                 _originalBitmap?.Dispose();
                 _originalBitmap = new Bitmap(bmp); // pristine kopya, bir daha dokunulmayacak
                 _appName = appName;
+                _lastRenderedIconSize = -1;
             }
 
             // TEK render giriş noktası - hem ilk çizim hem hover animasyonu bunu kullanır.
@@ -749,12 +914,53 @@ namespace OpenDock
                 {
                     g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
                     int offset = (_canvasSize - iconSize) / 2; // tuvalin ortas�na hizala
-                    g.DrawImage(_originalBitmap, offset, offset, iconSize, iconSize);
+                    DrawIconWithEdgeGlow(
+                        g,
+                        _originalBitmap,
+                        new RectangleF(offset, offset, iconSize, iconSize));
                 }
 
                 _bitmap?.Dispose();
                 _bitmap = canvas;
                 Redraw(windowX, windowY);
+            }
+
+            private static void DrawIconWithEdgeGlow(Graphics graphics, Bitmap icon, RectangleF destination)
+            {
+                DrawIconGlowLayer(graphics, icon, destination, 2.25f, 0.08f);
+                DrawIconGlowLayer(graphics, icon, destination, 1.10f, 0.16f);
+                graphics.DrawImage(icon, destination);
+            }
+
+            private static void DrawIconGlowLayer(
+                Graphics graphics,
+                Bitmap icon,
+                RectangleF destination,
+                float expansion,
+                float opacity)
+            {
+                RectangleF glowBounds = destination;
+                glowBounds.Inflate(expansion, expansion);
+
+                using var attributes = new System.Drawing.Imaging.ImageAttributes();
+                var opacityMatrix = new System.Drawing.Imaging.ColorMatrix
+                {
+                    Matrix33 = opacity
+                };
+                attributes.SetColorMatrix(
+                    opacityMatrix,
+                    System.Drawing.Imaging.ColorMatrixFlag.Default,
+                    System.Drawing.Imaging.ColorAdjustType.Bitmap);
+
+                graphics.DrawImage(
+                    icon,
+                    Rectangle.Round(glowBounds),
+                    0,
+                    0,
+                    icon.Width,
+                    icon.Height,
+                    GraphicsUnit.Pixel,
+                    attributes);
             }
 
             private void RescaleFromOriginal(int targetSize)
@@ -782,116 +988,85 @@ namespace OpenDock
 
                 int w = _bitmap.Width;
                 int h = _bitmap.Height;
-                if (w <= 0 || h <= 0) return;
 
                 IntPtr screenDc = GetDC(IntPtr.Zero);
-                if (screenDc == IntPtr.Zero) return;
                 IntPtr memDc = CreateCompatibleDC(screenDc);
-                if (memDc == IntPtr.Zero)
+
+                var bmi = new BITMAPINFO
                 {
+                    bmiHeader = new BITMAPINFOHEADER
+                    {
+                        biSize = (uint)Marshal.SizeOf<BITMAPINFOHEADER>(),
+                        biWidth = w,
+                        biHeight = -h, // negatif = top-down DIB, GDI+ ile e�le�en sat�r s�ras�
+                        biPlanes = 1,
+                        biBitCount = 32,
+                        biCompression = 0 // BI_RGB
+                    }
+                };
+
+                IntPtr hBitmap = CreateDIBSection(screenDc, ref bmi, 0, out IntPtr bits, IntPtr.Zero, 0);
+                if (hBitmap == IntPtr.Zero || bits == IntPtr.Zero)
+                {
+                    DeleteDC(memDc);
                     ReleaseDC(IntPtr.Zero, screenDc);
                     return;
                 }
 
+                // Kaynak bitmap'ten ham piksel verisini oku ve PREMULTIPLIED alpha
+                // olarak DIB section'a yaz. GetHbitmap'in eksik b�rakt��� as�l ad�m bu �
+                // hayalet/ghosting ve kenar fringe sorunlar�n�n k�k� buydu.
+                var rect = new Rectangle(0, 0, w, h);
+                var srcData = _bitmap.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
                 try
                 {
-                    var bmi = new BITMAPINFO
+                    byte[] row = new byte[w * 4];
+                    for (int y2 = 0; y2 < h; y2++)
                     {
-                        bmiHeader = new BITMAPINFOHEADER
+                        Marshal.Copy(srcData.Scan0 + y2 * srcData.Stride, row, 0, row.Length);
+                        for (int x2 = 0; x2 < w; x2++)
                         {
-                            biSize = (uint)Marshal.SizeOf<BITMAPINFOHEADER>(),
-                            biWidth = w,
-                            biHeight = -h, // top-down DIB
-                            biPlanes = 1,
-                            biBitCount = 32,
-                            biCompression = 0 // BI_RGB
+                            int i = x2 * 4;
+                            byte b = row[i];
+                            byte g = row[i + 1];
+                            byte r = row[i + 2];
+                            byte a = row[i + 3];
+                            // Premultiply: her renk kanal� alpha oran�nda �l�ekleniyor
+                            row[i] = (byte)(b * a / 255);
+                            row[i + 1] = (byte)(g * a / 255);
+                            row[i + 2] = (byte)(r * a / 255);
+                            row[i + 3] = a;
                         }
-                    };
-
-                    IntPtr hBitmap = CreateDIBSection(screenDc, ref bmi, 0, out IntPtr bits, IntPtr.Zero, 0);
-                    if (hBitmap == IntPtr.Zero || bits == IntPtr.Zero)
-                        return;
-
-                    try
-                    {
-                        var rect = new Rectangle(0, 0, w, h);
-                        var srcData = _bitmap.LockBits(rect, System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
-                        try
-                        {
-                            unsafe
-                            {
-                                byte* pSrc = (byte*)srcData.Scan0;
-                                byte* pDst = (byte*)bits;
-                                int srcStride = srcData.Stride;
-                                int dstStride = w * 4;
-
-                                for (int y2 = 0; y2 < h; y2++)
-                                {
-                                    byte* sRow = pSrc + y2 * srcStride;
-                                    byte* dRow = pDst + y2 * dstStride;
-
-                                    for (int x2 = 0; x2 < w; x2++)
-                                    {
-                                        int i = x2 * 4;
-                                        byte a = sRow[i + 3];
-                                        if (a == 0)
-                                        {
-                                            *(uint*)(dRow + i) = 0;
-                                        }
-                                        else if (a == 255)
-                                        {
-                                            *(uint*)(dRow + i) = *(uint*)(sRow + i);
-                                        }
-                                        else
-                                        {
-                                            dRow[i] = (byte)(sRow[i] * a / 255);
-                                            dRow[i + 1] = (byte)(sRow[i + 1] * a / 255);
-                                            dRow[i + 2] = (byte)(sRow[i + 2] * a / 255);
-                                            dRow[i + 3] = a;
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                        finally
-                        {
-                            _bitmap.UnlockBits(srcData);
-                        }
-
-                        IntPtr oldBitmap = SelectObject(memDc, hBitmap);
-                        try
-                        {
-                            var size = new SIZE(w, h);
-                            var pointSource = new POINT(0, 0);
-                            var topPos = new POINT(x, y);
-                            var blend = new BLENDFUNCTION
-                            {
-                                BlendOp = AC_SRC_OVER,
-                                BlendFlags = 0,
-                                SourceConstantAlpha = 255,
-                                AlphaFormat = AC_SRC_ALPHA
-                            };
-
-                            UpdateLayeredWindow(Handle, screenDc, ref topPos, ref size, memDc, ref pointSource, 0, ref blend, ULW_ALPHA);
-                        }
-                        finally
-                        {
-                            SelectObject(memDc, oldBitmap);
-                        }
-                    }
-                    finally
-                    {
-                        DeleteObject(hBitmap);
+                        Marshal.Copy(row, 0, bits + y2 * w * 4, row.Length);
                     }
                 }
                 finally
                 {
-                    DeleteDC(memDc);
-                    ReleaseDC(IntPtr.Zero, screenDc);
+                    _bitmap.UnlockBits(srcData);
                 }
+
+                IntPtr oldBitmap = SelectObject(memDc, hBitmap);
+
+                var size = new SIZE(w, h);
+                var pointSource = new POINT(0, 0);
+                var topPos = new POINT(x, y);
+                var blend = new BLENDFUNCTION
+                {
+                    BlendOp = AC_SRC_OVER,
+                    BlendFlags = 0,
+                    SourceConstantAlpha = 255,
+                    AlphaFormat = AC_SRC_ALPHA
+                };
+
+                UpdateLayeredWindow(Handle, screenDc, ref topPos, ref size, memDc, ref pointSource, 0, ref blend, ULW_ALPHA);
+
+                SelectObject(memDc, oldBitmap);
+                DeleteObject(hBitmap);
+                DeleteDC(memDc);
+                ReleaseDC(IntPtr.Zero, screenDc);
             }
 
-            // Boyut deitiinde (hover animasyonunda) bitmap'i yeniden lekleyip iz
+            // Boyut de�i�ti�inde (hover animasyonunda) bitmap'i yeniden �l�ekleyip �iz
 
 
             protected override bool ShowWithoutActivation => true;
@@ -918,6 +1093,7 @@ namespace OpenDock
             public string ExePath { get; set; } = "";
             public bool IsPinned { get; set; }
             public bool IsOpen { get; set; }
+            public int OpenWindowCount { get; set; }
 
             public double CurrentProgress { get; set; } = 0; // 0.0 (en küçük) ile 1.0 (en büyük) arası
             public bool IsHovered { get; set; } = false;
@@ -932,7 +1108,6 @@ namespace OpenDock
             public double EnterProgress { get; set; } = 1.0;
             public bool IsTaskManagerPlaceholder { get; set; } = false;
             public double TargetMagnification { get; set; } = 0.0;
-            public double CurrentMagnification { get; set; } = 0.0;
             public bool IsRecycleBin { get; set; } = false;
         }
 
@@ -948,16 +1123,41 @@ namespace OpenDock
             public string DisplayName { get; set; } = "";
             public string ExePath { get; set; } = "";
             public IntPtr WindowHandle { get; set; } = IntPtr.Zero;
+            public int OpenWindowCount { get; set; }
             public bool IsPinned { get; set; }
             public bool IsOpen => WindowHandle != IntPtr.Zero;
             public bool IsTaskManagerPlaceholder { get; set; } = false;
         }
 
         private readonly List<DockItemData> _dockItems = new();
+        private readonly object _minimizeAnimationSync = new();
+        private readonly HashSet<IntPtr> _minimizeAnimationsInFlight = new();
+        private readonly Dictionary<IntPtr, CachedAnimationFrame> _cachedAnimationFrames = new();
+        private WinEventDelegate? _minimizeWinEventDelegate;
+        private IntPtr _minimizeWinEventHook = IntPtr.Zero;
+        private LowLevelMouseProc? _minimizeMouseHookDelegate;
+        private IntPtr _minimizeMouseHook = IntPtr.Zero;
+        private Bitmap? _pendingMinimizeSnapshot;
+        private Rectangle _pendingMinimizeBounds;
+        private IntPtr _pendingMinimizeWindow = IntPtr.Zero;
+        private long _pendingMinimizeCapturedAt;
         private const int MaxIconSize = 128; // pencerelerin SABİT, hiç değişmeyen tuval boyutu
         private System.Windows.Forms.Timer _hoverCheckTimer = null!;
         private System.Windows.Forms.Timer _autoRefreshTimer = null!;
         private NotifyIcon? _trayIcon;
+
+        private sealed class CachedAnimationFrame
+        {
+            public Bitmap Snapshot { get; }
+            public Rectangle WindowBounds { get; }
+
+            public CachedAnimationFrame(Bitmap snapshot, Rectangle windowBounds)
+            {
+                Snapshot = snapshot;
+                WindowBounds = windowBounds;
+            }
+        }
+
         private ToolStripMenuItem? _startupMenuItem;
         private ToolStripMenuItem? _showClockMenuItem;
         private ToolStripMenuItem? _separateRunningAppsMenuItem;
@@ -970,10 +1170,13 @@ namespace OpenDock
         private int _appsSeparatorOffset = -1;
         private bool _dockHiddenByGameMode = false;
         private static readonly string OrderFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dock_order.txt");
-        private static readonly string PinnedAppsFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dock_pins.json");
-        private static readonly string SettingsFilePath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "opendock_settings.json");
+        private static readonly string SettingsDirectory = System.IO.Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "OpenDock");
+        private static readonly string SettingsFilePath = System.IO.Path.Combine(SettingsDirectory, "opendock_settings.json");
+        private static readonly string PinnedAppsFilePath = System.IO.Path.Combine(SettingsDirectory, "dock_pins.json");
         internal static OpenDockSettings CurrentSettings { get; private set; } = new();
-        private const int DockCornerRadius = 10;
+        private const int DockCornerRadius = 12;
         private List<string> _savedOrder = new();
         private List<PinnedDockApp> _pinnedApps = new();
         private ClockForm? _clockForm;
@@ -986,6 +1189,8 @@ namespace OpenDock
         private System.Windows.Forms.Timer _autoHideTimer = null!;
         private Point _dockVisibleLocation;
         private Point _dockHiddenLocation;
+        private Rectangle _baseDockBounds;
+        private Rectangle _magnifiedDockVisibleBounds;
         private DateTime _lastCursorInDock = DateTime.Now;
         private const int AutoHideEdgeThreshold = 5;
         private const int AutoHideLeaveThreshold = 80;
@@ -1015,19 +1220,16 @@ namespace OpenDock
             if (_dockHiddenByGameMode) return;
 
             Point cursor = Cursor.Position;
-            int padding = 10; // biraz tolerans, tam kenarda titremeyi de onler
-
-            string pos = CurrentSettings.DockPosition ?? "Bottom";
-            bool isVertical = pos.Equals("Left", StringComparison.OrdinalIgnoreCase) ||
-                              pos.Equals("Right", StringComparison.OrdinalIgnoreCase);
-
-            DockItemData? closestItem = null;
-            int closestIdx = -1;
+            int padding = 10;
+            string position = CurrentSettings.DockPosition ?? "Bottom";
+            bool isVertical = position.Equals("Left", StringComparison.OrdinalIgnoreCase) ||
+                              position.Equals("Right", StringComparison.OrdinalIgnoreCase);
+            int closestIndex = -1;
             double minDistance = double.MaxValue;
 
-            for (int i = 0; i < _dockItems.Count; i++)
+            for (int index = 0; index < _dockItems.Count; index++)
             {
-                var item = _dockItems[i];
+                DockItemData item = _dockItems[index];
                 var rect = new Rectangle(
                     item.OriginalLocation.X - padding,
                     item.OriginalLocation.Y - padding,
@@ -1037,64 +1239,84 @@ namespace OpenDock
                 if (rect.Contains(cursor))
                 {
                     double center = isVertical
-                        ? (item.OriginalLocation.Y + item.OriginalSize.Height / 2.0)
-                        : (item.OriginalLocation.X + item.OriginalSize.Width / 2.0);
-                    double distance = Math.Abs((isVertical ? cursor.Y : cursor.X) - center);
+                        ? item.OriginalLocation.Y + item.OriginalSize.Height / 2.0
+                        : item.OriginalLocation.X + item.OriginalSize.Width / 2.0;
+                    double pointer = isVertical ? cursor.Y : cursor.X;
+                    double distance = Math.Abs(pointer - center);
                     if (distance < minDistance)
                     {
                         minDistance = distance;
-                        closestItem = item;
-                        closestIdx = i;
+                        closestIndex = index;
                     }
                 }
             }
 
-            // --- Magnification wave calculation ---
-            int magRange = Math.Max(1, CurrentSettings.MagnificationRange);
-            if (CurrentSettings.MagnificationEnabled && closestIdx >= 0)
+            double pointerOffset = 0.5;
+            if (closestIndex >= 0)
             {
-                for (int i = 0; i < _dockItems.Count; i++)
+                DockItemData hoveredItem = _dockItems[closestIndex];
+                double itemStart = isVertical ? hoveredItem.OriginalLocation.Y : hoveredItem.OriginalLocation.X;
+                double itemLength = Math.Max(1, isVertical ? hoveredItem.OriginalSize.Height : hoveredItem.OriginalSize.Width);
+                double pointer = isVertical ? cursor.Y : cursor.X;
+                pointerOffset = Math.Clamp((pointer - itemStart) / itemLength, 0.0, 1.0);
+            }
+
+            bool layoutChanged = false;
+            for (int index = 0; index < _dockItems.Count; index++)
+            {
+                DockItemData item = _dockItems[index];
+                double target = 0.0;
+                if (CurrentSettings.MagnificationEnabled && closestIndex >= 0)
                 {
-                    int dist = Math.Abs(i - closestIdx);
-                    if (dist == 0)
-                    {
-                        _dockItems[i].TargetMagnification = 1.0;
-                    }
-                    else if (dist <= magRange)
-                    {
-                        double factor = Math.Cos(dist * Math.PI / ((magRange + 1) * 2));
-                        _dockItems[i].TargetMagnification = Math.Max(0.0, factor * 0.7);
-                    }
-                    else
-                    {
-                        _dockItems[i].TargetMagnification = 0.0;
-                    }
+                    double itemCenter = isVertical
+                        ? item.OriginalLocation.Y + item.OriginalSize.Height / 2.0
+                        : item.OriginalLocation.X + item.OriginalSize.Width / 2.0;
+                    double pointer = isVertical ? cursor.Y : cursor.X;
+                    double pixelDist = Math.Abs(pointer - itemCenter);
 
-                    if (_dockItems[i].TargetMagnification > 0.001 || _dockItems[i].CurrentMagnification > 0.001)
+                    // Shortened physical pixel influence radius so distant icons never magnify
+                    int baseIconSize = CurrentSettings.DockIconSize;
+                    double maxRadius = Math.Max(1.0, baseIconSize * (0.80 + Math.Clamp(CurrentSettings.MagnificationRange, 1, 3) * 0.35));
+
+                    if (pixelDist < maxRadius)
                     {
-                        _dockItems[i].AnimTimer?.Start();
+                        double normDist = pixelDist / maxRadius;
+                        target = Math.Cos(normDist * (Math.PI / 2.0));
+                        target = Math.Clamp(target, 0.0, 1.0);
                     }
                 }
-            }
-            else
-            {
-                for (int i = 0; i < _dockItems.Count; i++)
+
+                item.TargetMagnification = target;
+                bool shouldHover = index == closestIndex;
+                if (item.IsHovered != shouldHover)
                 {
-                    _dockItems[i].TargetMagnification = 0.0;
-                    if (_dockItems[i].CurrentMagnification > 0.001)
+                    item.IsHovered = shouldHover;
+                    if (shouldHover)
+                        item.Owner.BringToTopNoActivate();
+                    layoutChanged = true;
+                }
+
+                double difference = item.TargetMagnification - item.CurrentProgress;
+                if (Math.Abs(difference) <= 0.01)
+                {
+                    if (item.CurrentProgress != item.TargetMagnification)
                     {
-                        _dockItems[i].AnimTimer?.Start();
+                        item.CurrentProgress = item.TargetMagnification;
+                        layoutChanged = true;
                     }
+                }
+                else
+                {
+                    item.CurrentProgress += difference * 0.42;
+                    layoutChanged = true;
                 }
             }
 
-            foreach (var item in _dockItems)
+            if (layoutChanged)
             {
-                bool shouldHover = (item == closestItem);
-                if (shouldHover && !item.IsHovered)
-                    PicBox_MouseEnter(item);
-                else if (!shouldHover && item.IsHovered)
-                    PicBox_MouseLeave(item);
+                UpdateMagnifiedDockBounds();
+                foreach (DockItemData item in _dockItems)
+                    UpdateSingleIconPosition(item);
             }
         }
 
@@ -1121,6 +1343,14 @@ namespace OpenDock
                 catch { }
             }
 
+            this.SetStyle(
+                ControlStyles.AllPaintingInWmPaint |
+                ControlStyles.UserPaint |
+                ControlStyles.OptimizedDoubleBuffer |
+                ControlStyles.ResizeRedraw, true);
+            this.DoubleBuffered = true;
+            this.ResizeRedraw = true;
+
             this.FormBorderStyle = FormBorderStyle.None;
             this.Size = new Size(980, 50);
             this.StartPosition = FormStartPosition.Manual;
@@ -1140,45 +1370,46 @@ namespace OpenDock
             _autoHideActive = false;
 
             Rectangle workspace = Screen.PrimaryScreen.WorkingArea;
-            int thickness = Math.Max(50, CurrentSettings.DockIconSize + 16);
+            int horizontalLength = Math.Clamp(CurrentSettings.DockLength, 320, Math.Max(320, workspace.Width - 20));
+            int verticalLength = Math.Clamp(CurrentSettings.DockLength, 320, Math.Max(320, workspace.Height - 20));
+            int thickness = Math.Max(50, CurrentSettings.DockIconSize + 14);
 
             string pos = CurrentSettings.DockPosition ?? "Bottom";
             if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
             {
-                int h = Math.Min(980, workspace.Height - 20);
-                this.Size = new Size(thickness, h);
+                this.Size = new Size(thickness, verticalLength);
                 int x = workspace.Left + 10;
                 int y = (workspace.Height - this.Height) / 2 + workspace.Top;
                 this.Location = new Point(x, y);
             }
             else if (pos.Equals("Right", StringComparison.OrdinalIgnoreCase))
             {
-                int h = Math.Min(980, workspace.Height - 20);
-                this.Size = new Size(thickness, h);
+                this.Size = new Size(thickness, verticalLength);
                 int x = workspace.Right - this.Width - 10;
                 int y = (workspace.Height - this.Height) / 2 + workspace.Top;
                 this.Location = new Point(x, y);
             }
             else if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
             {
-                int w = Math.Min(980, workspace.Width - 20);
-                this.Size = new Size(w, thickness);
+                this.Size = new Size(horizontalLength, thickness);
                 int x = (workspace.Width - this.Width) / 2 + workspace.Left;
                 int y = workspace.Top + 10;
                 this.Location = new Point(x, y);
             }
             else // Bottom
             {
-                int w = Math.Min(980, workspace.Width - 20);
-                this.Size = new Size(w, thickness);
+                this.Size = new Size(horizontalLength, thickness);
                 int x = (workspace.Width - this.Width) / 2 + workspace.Left;
                 int y = workspace.Bottom - this.Height - 10;
                 this.Location = new Point(x, y);
             }
 
+            _baseDockBounds = Bounds;
+            _magnifiedDockVisibleBounds = Bounds;
             ApplyDockRegion();
             UpdateAutoHidePositions();
             EnableBlur();
+            this.Invalidate();
         }
 
         private void ChangeDockPosition(string position)
@@ -1188,10 +1419,102 @@ namespace OpenDock
             UpdateDockPositionAndSize();
             RefreshDockIcons();
         }
+
+        private void ApplyDockLength(int requestedLength)
+        {
+            Rectangle workspace = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
+            string pos = CurrentSettings.DockPosition ?? "Bottom";
+            bool isVertical = pos.Equals("Left", StringComparison.OrdinalIgnoreCase) ||
+                              pos.Equals("Right", StringComparison.OrdinalIgnoreCase);
+            int maximum = Math.Max(320, (isVertical ? workspace.Height : workspace.Width) - 20);
+            CurrentSettings.DockLength = Math.Clamp(requestedLength, 320, maximum);
+            SaveSettings();
+            UpdateDockPositionAndSize();
+            RefreshDockIcons();
+        }
+
+        private ToolStripMenuItem CreateDockLengthMenu()
+        {
+            var lengthMenu = new ToolStripMenuItem(Loc.Get("dock_length"));
+            foreach (int length in new[] { 420, 520, 640, 760, 900 })
+            {
+                int selectedLength = length;
+                var item = new ToolStripMenuItem($"{selectedLength}px")
+                {
+                    Checked = CurrentSettings.DockLength == selectedLength,
+                    Tag = selectedLength
+                };
+                item.Click += (s, e) => ApplyDockLength(selectedLength);
+                lengthMenu.DropDownItems.Add(item);
+            }
+
+            lengthMenu.DropDownItems.Add(Loc.Get("custom_size"), null, (s, e) =>
+            {
+                string value = ShowInputDialog(
+                    Loc.Get("prompt_length"),
+                    Loc.Get("title_length"),
+                    CurrentSettings.DockLength.ToString());
+                if (int.TryParse(value, out int length))
+                    ApplyDockLength(length);
+            });
+
+            lengthMenu.DropDownOpening += (s, e) =>
+            {
+                foreach (ToolStripItem item in lengthMenu.DropDownItems)
+                {
+                    if (item is ToolStripMenuItem menuItem && menuItem.Tag is int itemLength)
+                        menuItem.Checked = CurrentSettings.DockLength == itemLength;
+                }
+            };
+            return lengthMenu;
+        }
+
+        private ToolStripMenuItem CreateMinimizeEffectMenu()
+        {
+            var effectMenu = new ToolStripMenuItem(Loc.Get("minimize_effect"));
+            var genieItem = new ToolStripMenuItem(Loc.Get("genie_effect"))
+            {
+                Checked = !string.Equals(CurrentSettings.MinimizeEffect, "Scale", StringComparison.OrdinalIgnoreCase)
+            };
+            var scaleItem = new ToolStripMenuItem(Loc.Get("scale_effect"))
+            {
+                Checked = string.Equals(CurrentSettings.MinimizeEffect, "Scale", StringComparison.OrdinalIgnoreCase)
+            };
+
+            genieItem.Click += (s, e) =>
+            {
+                CurrentSettings.MinimizeEffect = "Genie";
+                genieItem.Checked = true;
+                scaleItem.Checked = false;
+                SaveSettings();
+            };
+
+            scaleItem.Click += (s, e) =>
+            {
+                CurrentSettings.MinimizeEffect = "Scale";
+                scaleItem.Checked = true;
+                genieItem.Checked = false;
+                SaveSettings();
+            };
+
+            effectMenu.DropDownItems.Add(genieItem);
+            effectMenu.DropDownItems.Add(scaleItem);
+
+            effectMenu.DropDownOpening += (s, e) =>
+            {
+                bool isScale = string.Equals(CurrentSettings.MinimizeEffect, "Scale", StringComparison.OrdinalIgnoreCase);
+                genieItem.Checked = !isScale;
+                scaleItem.Checked = isScale;
+            };
+
+            return effectMenu;
+        }
+
         protected override void OnSizeChanged(EventArgs e)
         {
             base.OnSizeChanged(e);
             ApplyDockRegion();
+            this.Invalidate();
         }
 
         protected override void OnMouseClick(MouseEventArgs e)
@@ -1209,7 +1532,7 @@ namespace OpenDock
             if (Width <= 0 || Height <= 0)
                 return;
 
-            using var path = RoundedRect(new Rectangle(0, 0, Width - 1, Height - 1), DockCornerRadius);
+            using var path = RoundedRect(new Rectangle(0, 0, Width, Height), DockCornerRadius);
             var oldRegion = Region;
             Region = new Region(path);
             oldRegion?.Dispose();
@@ -1326,6 +1649,7 @@ namespace OpenDock
             LoadSettings();
             ApplyCssStyles();
             InitializeCssWatcher();
+            InitializeSettingsWatcher();
             if (CurrentSettings.MediaControllerCustomX != -9999 && CurrentSettings.MediaControllerCustomY != -9999)
             {
                 _mediaCustomLocation = new Point(CurrentSettings.MediaControllerCustomX, CurrentSettings.MediaControllerCustomY);
@@ -1379,6 +1703,11 @@ namespace OpenDock
             var refreshItem = new ToolStripMenuItem("Yenile");
             refreshItem.Click += (s, e) => RefreshDockIcons();
             _dockBgContextMenu.Items.Add(refreshItem);
+            _dockBgContextMenu.Items.Add(CreateDockLengthMenu());
+            _dockBgContextMenu.Items.Add(CreateMinimizeEffectMenu());
+            var settingsAppItem = new ToolStripMenuItem("OpenDock Ayarları");
+            settingsAppItem.Click += (s, e) => LaunchSettingsApp();
+            _dockBgContextMenu.Items.Add(settingsAppItem);
 
             _dockBgContextMenu.Items.Add("-");
 
@@ -1407,8 +1736,189 @@ namespace OpenDock
             this.Activated += (s, e) => EnableBlur();
             this.Deactivate += (s, e) => EnableBlur();
             InitializeTrayIcon();
+            InitializeMinimizeAnimationHook();
+            StartMenuForm.InitializeStartMenuFolderWatchers();
             StartMenuForm.WarmInstalledAppsCacheAsync();
+            InstallerWatcher.Start();
+            this.FormClosed += (s, e) => { DisposeMinimizeAnimationHook(); InstallerWatcher.Stop(); };
             this.ResumeLayout();
+        }
+
+        private static void LaunchSettingsApp()
+        {
+            try
+            {
+                string baseDir = AppDomain.CurrentDomain.BaseDirectory;
+                string[] possibleElectronExes = new[]
+                {
+                    System.IO.Path.Combine(baseDir, "..", "..", "..", "..", "OpenDock.App", "node_modules", "electron", "dist", "electron.exe"),
+                    System.IO.Path.Combine(baseDir, "OpenDock.App", "node_modules", "electron", "dist", "electron.exe"),
+                    System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Programs", "opendock-settings-app", "OpenDock Settings.exe")
+                };
+
+                string[] possibleAppDirs = new[]
+                {
+                    System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, "..", "..", "..", "..", "OpenDock.App")),
+                    System.IO.Path.GetFullPath(System.IO.Path.Combine(baseDir, "OpenDock.App"))
+                };
+
+                for (int i = 0; i < possibleElectronExes.Length; i++)
+                {
+                    try
+                    {
+                        string electronExe = System.IO.Path.GetFullPath(possibleElectronExes[i]);
+                        if (System.IO.File.Exists(electronExe))
+                        {
+                            string appDir = i < possibleAppDirs.Length && System.IO.Directory.Exists(possibleAppDirs[i])
+                                ? possibleAppDirs[i]
+                                : "";
+                            var psi = new ProcessStartInfo
+                            {
+                                FileName = electronExe,
+                                Arguments = string.IsNullOrWhiteSpace(appDir) ? "." : $"\"{appDir}\"",
+                                WorkingDirectory = string.IsNullOrWhiteSpace(appDir) ? System.IO.Path.GetDirectoryName(electronExe) : appDir,
+                                UseShellExecute = false
+                            };
+                            Process.Start(psi);
+                            return;
+                        }
+                    }
+                    catch { }
+                }
+
+                // Fallback to npm start
+                for (int i = 0; i < possibleAppDirs.Length; i++)
+                {
+                    if (System.IO.Directory.Exists(possibleAppDirs[i]))
+                    {
+                        var psi = new ProcessStartInfo
+                        {
+                            FileName = "cmd.exe",
+                            Arguments = "/c npm start",
+                            WorkingDirectory = possibleAppDirs[i],
+                            UseShellExecute = false,
+                            CreateNoWindow = true
+                        };
+                        Process.Start(psi);
+                        return;
+                    }
+                }
+            }
+            catch { }
+        }
+
+        private static Bitmap CreateRecentAppOverlayBitmap(IntPtr hWnd, Bitmap appIcon, int targetSize = 128)
+        {
+            var resultBmp = new Bitmap(targetSize, targetSize, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+            using (var g = Graphics.FromImage(resultBmp))
+            {
+                g.Clear(Color.Transparent);
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+
+                int cardPadding = 8;
+                int cardX = cardPadding;
+                int cardY = cardPadding;
+                int cardW = targetSize - (cardPadding * 2);
+                int cardH = targetSize - (cardPadding * 2);
+                int cornerRadius = 14;
+
+                var cardRect = new Rectangle(cardX, cardY, cardW, cardH);
+                using var cardPath = RoundedRect(cardRect, cornerRadius);
+
+                // Try to capture window snapshot
+                Bitmap? snapshot = null;
+                bool captured = hWnd != IntPtr.Zero && TryCaptureWindow(hWnd, out snapshot, out Rectangle _);
+
+                // 1. Draw window card background & contents clipped to rounded rectangle
+                var prevClip = g.Clip;
+                g.SetClip(cardPath, System.Drawing.Drawing2D.CombineMode.Intersect);
+
+                // Background: macOS dark glass card
+                using (var bgBrush = new SolidBrush(Color.FromArgb(235, 26, 28, 34)))
+                {
+                    g.FillRectangle(bgBrush, cardRect);
+                }
+
+                if (captured && snapshot != null)
+                {
+                    try
+                    {
+                        // Calculate aspect fit inside the card
+                        float snapAspect = (float)snapshot.Width / Math.Max(1, snapshot.Height);
+                        float cardAspect = (float)cardW / cardH;
+                        float drawW, drawH, drawX, drawY;
+
+                        if (snapAspect > cardAspect)
+                        {
+                            drawW = cardW;
+                            drawH = cardW / snapAspect;
+                            drawX = cardX;
+                            drawY = cardY + (cardH - drawH) / 2f;
+                        }
+                        else
+                        {
+                            drawH = cardH;
+                            drawW = cardH * snapAspect;
+                            drawX = cardX + (cardW - drawW) / 2f;
+                            drawY = cardY;
+                        }
+
+                        g.DrawImage(snapshot, new RectangleF(drawX, drawY, drawW, drawH));
+                    }
+                    finally
+                    {
+                        snapshot.Dispose();
+                    }
+                }
+                else
+                {
+                    // Fallback if window preview could not be captured: centered app icon with slight opacity
+                    int fallbackIconSize = (int)(cardW * 0.55f);
+                    int fallbackX = cardX + (cardW - fallbackIconSize) / 2;
+                    int fallbackY = cardY + (cardH - fallbackIconSize) / 2;
+                    g.DrawImage(appIcon, new Rectangle(fallbackX, fallbackY, fallbackIconSize, fallbackIconSize));
+                }
+
+                g.Clip = prevClip;
+
+                // 2. Draw card border (glass accent rim)
+                using (var borderPen = new Pen(Color.FromArgb(90, 255, 255, 255), 1.5f))
+                {
+                    g.DrawPath(borderPen, cardPath);
+                }
+
+                // 3. Draw application logo badge on the bottom-right corner
+                int badgeSize = (int)(targetSize * 0.38f);
+                int badgeX = targetSize - badgeSize - 4;
+                int badgeY = targetSize - badgeSize - 4;
+
+                // Drop shadow for the badge
+                using (var shadowBrush = new SolidBrush(Color.FromArgb(120, 0, 0, 0)))
+                {
+                    g.FillEllipse(shadowBrush, badgeX - 1, badgeY + 1, badgeSize + 2, badgeSize + 2);
+                }
+
+                // White circular base
+                using (var badgeBgBrush = new SolidBrush(Color.FromArgb(250, 255, 255, 255)))
+                {
+                    g.FillEllipse(badgeBgBrush, badgeX, badgeY, badgeSize, badgeSize);
+                }
+
+                // Subtle border on badge
+                using (var badgeBorderPen = new Pen(Color.FromArgb(50, 0, 0, 0), 1f))
+                {
+                    g.DrawEllipse(badgeBorderPen, badgeX, badgeY, badgeSize, badgeSize);
+                }
+
+                // App logo inside the badge
+                int logoPad = (int)(badgeSize * 0.12f);
+                var logoRect = new Rectangle(badgeX + logoPad, badgeY + logoPad, badgeSize - (logoPad * 2), badgeSize - (logoPad * 2));
+                g.DrawImage(appIcon, logoRect);
+            }
+
+            return resultBmp;
         }
 
         private void RefreshDockIcons()
@@ -1417,6 +1927,16 @@ namespace OpenDock
             {
                 this.Invoke(new Action(RefreshDockIcons));
                 return;
+            }
+
+            if (_baseDockBounds.Width > 0 && _baseDockBounds.Height > 0 &&
+                _autoHideProgress <= 0.01f && Bounds != _baseDockBounds)
+            {
+                Bounds = _baseDockBounds;
+                _magnifiedDockVisibleBounds = _baseDockBounds;
+                ApplyDockRegion();
+                this.Invalidate();
+                UpdateAutoHidePositions();
             }
 
             // Önce eski ikon pencerelerini ve timer'larını temizle
@@ -1437,7 +1957,6 @@ namespace OpenDock
             int baseSize = CurrentSettings.DockIconSize;
             int defaultOffset = isVertical ? (this.Width - baseSize) / 2 : (this.Height - baseSize) / 2;
 
-            var seenProcessNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             var tempWindows = new List<(IntPtr hwnd, string procName, Process proc)>();
 
             // Collect all matching open windows first
@@ -1462,14 +1981,7 @@ namespace OpenDock
                                     if (className.Equals("CabinetWClass", StringComparison.OrdinalIgnoreCase) ||
                                         className.Equals("ExploreWClass", StringComparison.OrdinalIgnoreCase))
                                     {
-                                        if (seenProcessNames.Add(procName))
-                                        {
-                                            tempWindows.Add((hwnd, procName, proc));
-                                        }
-                                        else
-                                        {
-                                            proc.Dispose();
-                                        }
+                                        tempWindows.Add((hwnd, procName, proc));
                                     }
                                     else
                                     {
@@ -1478,14 +1990,7 @@ namespace OpenDock
                                 }
                                 else
                                 {
-                                    if (seenProcessNames.Add(procName))
-                                    {
-                                        tempWindows.Add((hwnd, procName, proc));
-                                    }
-                                    else
-                                    {
-                                        proc.Dispose();
-                                    }
+                                    tempWindows.Add((hwnd, procName, proc));
                                 }
                             }
                             else
@@ -1574,17 +2079,22 @@ namespace OpenDock
                             DisplayName = displayName,
                             ExePath = path,
                             WindowHandle = hwnd,
+                            OpenWindowCount = 1,
                             IsPinned = IsPinnedApp(path)
                         };
                         entryMap[appKey] = entry;
                         dockEntries.Add(entry);
                     }
-                    else if (entry.WindowHandle == IntPtr.Zero)
+                    else
                     {
-                        entry.WindowHandle = hwnd;
-                        if (!string.IsNullOrWhiteSpace(displayName))
-                            entry.DisplayName = displayName;
-                        entry.ExePath = path;
+                        entry.OpenWindowCount++;
+                        if (entry.WindowHandle == IntPtr.Zero)
+                        {
+                            entry.WindowHandle = hwnd;
+                            if (!string.IsNullOrWhiteSpace(displayName))
+                                entry.DisplayName = displayName;
+                            entry.ExePath = path;
+                        }
                     }
 
                     if (!entry.IsPinned && IsPinnedApp(path))
@@ -1744,8 +2254,20 @@ namespace OpenDock
                         screenLocation = new Point(_dockVisibleLocation.X + startOffset, _dockVisibleLocation.Y + defaultOffset);
 
                     var iconWindow = new IconWindow(MaxIconSize);
-                    iconWindow.SetIconImage(icon.ToBitmap(), baseSize, entry.DisplayName);
-                    icon.Dispose(); // ToBitmap kopyaladıktan sonra artık lazım değil
+                    bool isRecentApp = !entry.IsPinned && entry.IsOpen;
+                    using (Bitmap appIconBmp = icon.ToBitmap())
+                    {
+                        if (isRecentApp)
+                        {
+                            using Bitmap overlayBmp = CreateRecentAppOverlayBitmap(entry.WindowHandle, appIconBmp, 128);
+                            iconWindow.SetIconImage(overlayBmp, baseSize, entry.DisplayName);
+                        }
+                        else
+                        {
+                            iconWindow.SetIconImage(appIconBmp, baseSize, entry.DisplayName);
+                        }
+                    }
+                    icon.Dispose();
 
                     var animData = new DockItemData
                     {
@@ -1757,6 +2279,7 @@ namespace OpenDock
                         ExePath = entry.ExePath,
                         IsPinned = entry.IsPinned,
                         IsOpen = entry.IsOpen,
+                        OpenWindowCount = entry.OpenWindowCount,
                         IsTaskManagerPlaceholder = entry.IsTaskManagerPlaceholder,
                         EnterProgress = entry.IsTaskManagerPlaceholder ? 0.0 : 1.0,
                         Owner = iconWindow,
@@ -1771,7 +2294,7 @@ namespace OpenDock
                     }
 
                     iconWindow.Cursor = Cursors.Hand;
-                    iconWindow.ShowIndicator = animData.IsOpen;
+                    iconWindow.IndicatorCount = animData.OpenWindowCount;
                     iconWindow.MouseUp += (s, e) =>
                     {
                         if (e.Button == MouseButtons.Right)
@@ -1794,15 +2317,13 @@ namespace OpenDock
                         if (animData.IsOpen)
                         {
                             var openWindows = GetOpenWindowsForApp(animData);
-                            if (openWindows.Count > 1)
+                            IntPtr firstWindow = openWindows.FirstOrDefault();
+                            if (firstWindow != IntPtr.Zero)
                             {
-                                ShowWindowPreviews(openWindows, animData.DisplayName, iconWindow);
-                                return;
-                            }
-
-                            if (animData.WindowHandle != IntPtr.Zero)
-                            {
-                                FocusWindow(animData.WindowHandle);
+                                animData.WindowHandle = firstWindow;
+                                FocusWindow(
+                                    firstWindow,
+                                    new Rectangle(animData.OriginalLocation, animData.OriginalSize));
                                 return;
                             }
                         }
@@ -1831,32 +2352,59 @@ namespace OpenDock
                 }
             }
 
-            // Add Recycle Bin widget at the far end (just before the Windows logo separator)
+            // Right section: [Recycle Bin (Trash)] [Windows Start Menu] [Task View]
+            // Preceded by Separator 2 (as in Apple iMac Dock guide: Pinned Apps | Recent Apps | Folders & Trash)
+            int dockTotalLength = isVertical ? this.Height : this.Width;
+            int taskViewButtonOffset = dockTotalLength - baseSize - 20;
+            int winButtonOffset = taskViewButtonOffset - baseSize - 15;
+            int rbOffset = winButtonOffset;
             if (CurrentSettings.ShowRecycleBin)
             {
-                int rbWinButtonOffset = (isVertical ? this.Height : this.Width) - (baseSize * 2) - 40;
-                int rbSeparatorOffset = rbWinButtonOffset - 15;
-                int rbOffset = rbSeparatorOffset - baseSize - 15;
+                rbOffset = winButtonOffset - baseSize - 15;
+            }
 
-                // Safeguard: prevent overlapping with app icons if there are too many
-                if (rbOffset < startOffset + 10)
+            int rightSeparatorOffset = (CurrentSettings.ShowRecycleBin ? rbOffset : winButtonOffset) - 15;
+
+            // Safeguard against overlapping if dock has many items
+            if (rightSeparatorOffset < startOffset + 10)
+            {
+                rightSeparatorOffset = startOffset + 10;
+                if (CurrentSettings.ShowRecycleBin)
                 {
-                    rbOffset = startOffset + 10;
+                    rbOffset = rightSeparatorOffset + 15;
+                    winButtonOffset = rbOffset + baseSize + 15;
                 }
+                else
+                {
+                    winButtonOffset = rightSeparatorOffset + 15;
+                }
+                taskViewButtonOffset = winButtonOffset + baseSize + 15;
+            }
 
-                // Calculate position relative to _dockVisibleLocation for auto-hide compatibility
+            if (isVertical)
+            {
+                _separatorY = rightSeparatorOffset;
+                _separatorX = -1;
+            }
+            else
+            {
+                _separatorX = rightSeparatorOffset;
+                _separatorY = -1;
+            }
+
+            // Add Recycle Bin widget in the right section (after separator)
+            if (CurrentSettings.ShowRecycleBin)
+            {
                 Point rbLocation;
                 if (isVertical)
                     rbLocation = new Point(_dockVisibleLocation.X + defaultOffset, _dockVisibleLocation.Y + rbOffset);
                 else
                     rbLocation = new Point(_dockVisibleLocation.X + rbOffset, _dockVisibleLocation.Y + defaultOffset);
 
-                // Update startOffset so any calculations after this know the final layout boundary
-                startOffset = rbOffset;
-
                 var rbIconWindow = new IconWindow(MaxIconSize);
                 var rbIcon = GetRecycleBinIcon();
                 rbIconWindow.SetIconImage(rbIcon.ToBitmap(), baseSize, IsRecycleBinEmpty() ? "Çöp Kutusu" : "Çöp Kutusu (Dolu)");
+                rbIcon.Dispose();
 
                 var rbData = new DockItemData
                 {
@@ -1901,29 +2449,11 @@ namespace OpenDock
                 rbIconWindow.Show(this);
                 rbIconWindow.UpdateBounds(rbLocation.X, rbLocation.Y, baseSize);
                 _dockItems.Add(rbData);
-
-                startOffset = rbOffset + baseSize + 15;
             }
 
-            // Draw a separator line and place the Windows button and Task View button at the very bottom/right of the dock
-            int winButtonOffset = (isVertical ? this.Height : this.Width) - (baseSize * 2) - 40;
-            int taskViewButtonOffset = (isVertical ? this.Height : this.Width) - baseSize - 25;
-            int separatorOffset = winButtonOffset - 15;
-            if (isVertical)
-            {
-                _separatorY = separatorOffset;
-                _separatorX = -1;
-            }
-            else
-            {
-                _separatorX = separatorOffset;
-                _separatorY = -1;
-            }
-
-            // Create Windows Start Button
+            // Create Windows Start Button in the right section
             try
             {
-                // Calculate position relative to _dockVisibleLocation for auto-hide compatibility
                 Point screenLocation;
                 if (isVertical)
                     screenLocation = new Point(_dockVisibleLocation.X + defaultOffset, _dockVisibleLocation.Y + winButtonOffset);
@@ -1955,10 +2485,9 @@ namespace OpenDock
             }
             catch { }
 
-            // Create Task View Button (3 lines, modern Alt+Tab)
+            // Create Task View Button (3 lines, modern Alt+Tab) in the right section
             try
             {
-                // Calculate position relative to _dockVisibleLocation for auto-hide compatibility
                 Point screenLocationTaskView;
                 if (isVertical)
                     screenLocationTaskView = new Point(_dockVisibleLocation.X + defaultOffset, _dockVisibleLocation.Y + taskViewButtonOffset);
@@ -2133,22 +2662,53 @@ namespace OpenDock
         {
             try
             {
+                EnsureSettingsStorage();
                 if (!System.IO.File.Exists(SettingsFilePath))
                 {
                     CurrentSettings = new OpenDockSettings();
                     return;
                 }
 
-                string json = System.IO.File.ReadAllText(SettingsFilePath);
-                var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
-                CurrentSettings = JsonSerializer.Deserialize<OpenDockSettings>(json, options) ?? new OpenDockSettings();
+                string? json = null;
+                for (int attempt = 0; attempt < 8; attempt++)
+                {
+                    try
+                    {
+                        using var fs = new System.IO.FileStream(SettingsFilePath, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite);
+                        using var sr = new System.IO.StreamReader(fs, System.Text.Encoding.UTF8);
+                        json = sr.ReadToEnd();
+                        if (!string.IsNullOrWhiteSpace(json)) break;
+                    }
+                    catch (System.IO.IOException)
+                    {
+                        System.Threading.Thread.Sleep(25);
+                    }
+                }
+
+                if (string.IsNullOrWhiteSpace(json)) return;
+                var options = new JsonSerializerOptions
+                {
+                    PropertyNameCaseInsensitive = true,
+                    NumberHandling = JsonNumberHandling.AllowReadingFromString
+                };
+                options.Converters.Add(new ArgbColorJsonConverter());
+                var loaded = JsonSerializer.Deserialize<OpenDockSettings>(json, options);
+                if (loaded == null) return;
+                CurrentSettings = loaded;
+                CurrentSettings.DockIconSize = Math.Clamp(CurrentSettings.DockIconSize, 16, MaxIconSize);
+                CurrentSettings.DockLength = Math.Clamp(CurrentSettings.DockLength, 320, 3840);
+                CurrentSettings.MagnifiedIconSize = Math.Clamp(
+                    CurrentSettings.MagnifiedIconSize,
+                    CurrentSettings.DockIconSize,
+                    MaxIconSize);
+                CurrentSettings.DockBackgroundAlpha = Math.Clamp(CurrentSettings.DockBackgroundAlpha, 0, 255);
                 CurrentSettings.DockColorArgb = WithAlpha(CurrentSettings.DockColorArgb, CurrentSettings.DockBackgroundAlpha);
                 CurrentSettings.MenuColorArgb = WithAlpha(CurrentSettings.MenuColorArgb, CurrentSettings.DockBackgroundAlpha);
                 CurrentSettings.SearchColorArgb = WithAlpha(CurrentSettings.SearchColorArgb, 255);
             }
             catch
             {
-                CurrentSettings = new OpenDockSettings();
+                // Preserve active settings on transient error
             }
         }
 
@@ -2162,11 +2722,40 @@ namespace OpenDock
         {
             try
             {
+                System.IO.Directory.CreateDirectory(SettingsDirectory);
                 var options = new JsonSerializerOptions { WriteIndented = true };
                 string json = JsonSerializer.Serialize(CurrentSettings, options);
-                System.IO.File.WriteAllText(SettingsFilePath, json);
+                string temporaryPath = SettingsFilePath + ".tmp";
+                System.IO.File.WriteAllText(temporaryPath, json);
+                System.IO.File.Move(temporaryPath, SettingsFilePath, true);
             }
             catch { }
+        }
+
+        private static void EnsureSettingsStorage()
+        {
+            System.IO.Directory.CreateDirectory(SettingsDirectory);
+            if (!System.IO.File.Exists(SettingsFilePath))
+            {
+                string legacyPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "opendock_settings.json");
+                if (System.IO.File.Exists(legacyPath))
+                {
+                    try { System.IO.File.Copy(legacyPath, SettingsFilePath, false); } catch { }
+                }
+            }
+
+            if (!System.IO.File.Exists(PinnedAppsFilePath))
+            {
+                string legacyPins = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dock_pins.json");
+                if (System.IO.File.Exists(legacyPins))
+                {
+                    try { System.IO.File.Copy(legacyPins, PinnedAppsFilePath, false); } catch { }
+                }
+            }
+
+
+
+
         }
 
         private void ApplyDockAppearance()
@@ -2262,7 +2851,22 @@ namespace OpenDock
                     return;
                 }
 
-                string json = System.IO.File.ReadAllText(PinnedAppsFilePath);
+                string? json = null;
+                for (int attempt = 0; attempt < 8; attempt++)
+                {
+                    try
+                    {
+                        using var fs = new System.IO.FileStream(PinnedAppsFilePath, System.IO.FileMode.Open, System.IO.FileAccess.Read, System.IO.FileShare.ReadWrite);
+                        using var sr = new System.IO.StreamReader(fs, System.Text.Encoding.UTF8);
+                        json = sr.ReadToEnd();
+                        if (!string.IsNullOrWhiteSpace(json)) break;
+                    }
+                    catch (System.IO.IOException)
+                    {
+                        System.Threading.Thread.Sleep(25);
+                    }
+                }
+                if (string.IsNullOrWhiteSpace(json)) return;
                 var options = new JsonSerializerOptions { PropertyNameCaseInsensitive = true };
                 var fileData = JsonSerializer.Deserialize<PinnedDockConfig>(json, options);
                 _pinnedApps = fileData?.PinnedApps
@@ -2278,7 +2882,7 @@ namespace OpenDock
             }
             catch
             {
-                _pinnedApps = new List<PinnedDockApp>();
+                // Preserve existing pinned apps on transient error
             }
         }
 
@@ -2303,6 +2907,11 @@ namespace OpenDock
 
                 string json = JsonSerializer.Serialize(config, options);
                 System.IO.File.WriteAllText(PinnedAppsFilePath, json);
+                string legacyPins = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "dock_pins.json");
+                if (System.IO.File.Exists(legacyPins))
+                {
+                    try { System.IO.File.WriteAllText(legacyPins, json); } catch { }
+                }
             }
             catch { }
         }
@@ -2423,11 +3032,35 @@ namespace OpenDock
             var menu = new ContextMenuStrip
             {
                 Renderer = new ModernTrayMenuRenderer(),
-                ShowImageMargin = false,
+                ShowImageMargin = true,
                 BackColor = Color.FromArgb(32, 32, 34),
                 ForeColor = Color.FromArgb(246, 247, 249),
                 Font = new Font("Segoe UI", 9.5f)
             };
+
+            var openWindows = GetOpenWindowsForApp(data);
+            data.OpenWindowCount = openWindows.Count;
+            data.Owner.IndicatorCount = openWindows.Count;
+            IntPtr foregroundWindow = GetForegroundWindow();
+            foreach (IntPtr window in openWindows)
+            {
+                IntPtr selectedWindow = window;
+                string title = GetWindowTitle(selectedWindow);
+                if (string.IsNullOrWhiteSpace(title))
+                    title = data.DisplayName;
+                if (title.Length > 72)
+                    title = title[..69] + "...";
+
+                var windowItem = new ToolStripMenuItem(title.Replace("&", "&&"))
+                {
+                    Checked = foregroundWindow == selectedWindow
+                };
+                windowItem.Click += (s, e) => FocusWindow(selectedWindow);
+                menu.Items.Add(windowItem);
+            }
+
+            if (openWindows.Count > 0)
+                menu.Items.Add(new ToolStripSeparator());
 
             var pinToggleText = data.IsPinned ? "Dock'tan kaldır" : "Dock'a kilitle";
             var pinToggleItem = new ToolStripMenuItem(pinToggleText);
@@ -2486,41 +3119,10 @@ namespace OpenDock
             SetupMenuBlur(menu);
             return menu;
         }
-        private static readonly Dictionary<uint, string> _pidProcessNameCache = new();
-        private static readonly Dictionary<uint, DateTime> _pidCacheTime = new();
-
-        private static string GetProcessNameFromPid(uint pid)
-        {
-            if (pid == 0) return "";
-            lock (_pidProcessNameCache)
-            {
-                if (_pidProcessNameCache.TryGetValue(pid, out string? cachedName) &&
-                    _pidCacheTime.TryGetValue(pid, out DateTime time) &&
-                    DateTime.UtcNow - time < TimeSpan.FromSeconds(30))
-                {
-                    return cachedName;
-                }
-            }
-
-            string name = "";
-            try
-            {
-                using var proc = Process.GetProcessById((int)pid);
-                name = proc.ProcessName;
-            }
-            catch { }
-
-            lock (_pidProcessNameCache)
-            {
-                _pidProcessNameCache[pid] = name;
-                _pidCacheTime[pid] = DateTime.UtcNow;
-            }
-            return name;
-        }
-
         private void CheckForWindowChanges()
         {
-            var activeWindowsByProc = new Dictionary<string, List<IntPtr>>(StringComparer.OrdinalIgnoreCase);
+            var currentHandles = new List<IntPtr>();
+            var seenProcessNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
 
             EnumWindows((hwnd, lParam) =>
             {
@@ -2529,80 +3131,55 @@ namespace OpenDock
                     GetWindowThreadProcessId(hwnd, out uint pid);
                     if (pid != 0)
                     {
-                        string procName = GetProcessNameFromPid(pid);
-                        if (!string.IsNullOrEmpty(procName) &&
-                            !procName.Equals("OpenDock", StringComparison.OrdinalIgnoreCase) &&
-                            !procName.Equals("idle", StringComparison.OrdinalIgnoreCase))
+                        try
                         {
-                            if (procName.Equals("explorer", StringComparison.OrdinalIgnoreCase))
+                            using (var proc = Process.GetProcessById((int)pid))
                             {
-                                string className = GetWindowClassName(hwnd);
-                                if (className.Equals("CabinetWClass", StringComparison.OrdinalIgnoreCase) ||
-                                    className.Equals("ExploreWClass", StringComparison.OrdinalIgnoreCase))
+                                string procName = proc.ProcessName;
+                                if (!procName.Equals("OpenDock", StringComparison.OrdinalIgnoreCase) &&
+                                    !procName.Equals("idle", StringComparison.OrdinalIgnoreCase))
                                 {
-                                    if (!activeWindowsByProc.TryGetValue(procName, out var list))
+                                    if (procName.Equals("explorer", StringComparison.OrdinalIgnoreCase))
                                     {
-                                        list = new List<IntPtr>();
-                                        activeWindowsByProc[procName] = list;
+                                        string className = GetWindowClassName(hwnd);
+                                        if (className.Equals("CabinetWClass", StringComparison.OrdinalIgnoreCase) ||
+                                            className.Equals("ExploreWClass", StringComparison.OrdinalIgnoreCase))
+                                        {
+                                            if (seenProcessNames.Add(procName))
+                                            {
+                                                currentHandles.Add(hwnd);
+                                            }
+                                        }
                                     }
-                                    list.Add(hwnd);
+                                    else
+                                    {
+                                        if (seenProcessNames.Add(procName))
+                                        {
+                                            currentHandles.Add(hwnd);
+                                        }
+                                    }
                                 }
-                            }
-                            else
-                            {
-                                if (!activeWindowsByProc.TryGetValue(procName, out var list))
-                                {
-                                    list = new List<IntPtr>();
-                                    activeWindowsByProc[procName] = list;
-                                }
-                                list.Add(hwnd);
                             }
                         }
+                        catch { }
                     }
                 }
                 return true;
             }, IntPtr.Zero);
 
-            // Determine if the set of running processes has changed
-            bool changed = false;
-
-            // Check if any currently displayed unpinned app closed or pinned app changed running state
+            var existingHandles = new List<IntPtr>();
             foreach (var item in _dockItems)
             {
-                if (item.IsRecycleBin || item.IsTaskManagerPlaceholder) continue;
-
-                string procName = GetProcessNameFromPath(item.ExePath);
-                if (string.IsNullOrEmpty(procName)) continue;
-
-                bool isRunningNow = activeWindowsByProc.ContainsKey(procName);
-                if (item.IsOpen != isRunningNow)
+                if (item.WindowHandle != IntPtr.Zero)
                 {
-                    changed = true;
-                    break;
+                    existingHandles.Add(item.WindowHandle);
                 }
             }
 
-            // Check if any new running app appeared that isn't on dock
-            if (!changed)
-            {
-                var dockProcs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-                foreach (var item in _dockItems)
-                {
-                    if (item.IsRecycleBin || item.IsTaskManagerPlaceholder) continue;
-                    string procName = GetProcessNameFromPath(item.ExePath);
-                    if (!string.IsNullOrEmpty(procName))
-                        dockProcs.Add(procName);
-                }
-
-                foreach (var runningProc in activeWindowsByProc.Keys)
-                {
-                    if (!dockProcs.Contains(runningProc))
-                    {
-                        changed = true;
-                        break;
-                    }
-                }
-            }
+            // Compare sets of handles (order-independent) to prevent refreshing on window focus/Z-order changes
+            var currentSet = new HashSet<IntPtr>(currentHandles);
+            var existingSet = new HashSet<IntPtr>(existingHandles);
+            bool changed = !currentSet.SetEquals(existingSet);
 
             if (changed)
             {
@@ -2610,33 +3187,28 @@ namespace OpenDock
             }
             else
             {
-                // Update active window handles and titles dynamically without destroying dock items
+                // Update titles dynamically for existing windows without rebuilding the dock
                 foreach (var item in _dockItems)
                 {
-                    if (item.IsRecycleBin || item.IsTaskManagerPlaceholder) continue;
-
-                    string procName = GetProcessNameFromPath(item.ExePath);
-                    if (string.IsNullOrEmpty(procName)) continue;
-
-                    if (activeWindowsByProc.TryGetValue(procName, out var windows) && windows.Count > 0)
+                    if (item.WindowHandle != IntPtr.Zero)
                     {
-                        // Frontmost window of this application in Z-order
-                        IntPtr topHwnd = windows[0];
-                        if (item.WindowHandle != topHwnd)
+                        bool needsRepaint = false;
+                        var openWindows = GetOpenWindowsForApp(item);
+                        int windowCount = openWindows.Count;
+                        if (windowCount > 0)
+                            item.WindowHandle = openWindows[0];
+                        if (item.OpenWindowCount != windowCount)
                         {
-                            item.WindowHandle = topHwnd;
-                        }
-                        if (!item.IsOpen)
-                        {
-                            item.IsOpen = true;
-                            item.Owner.ShowIndicator = true;
-                            UpdateSingleIconPosition(item);
+                            item.OpenWindowCount = windowCount;
+                            item.Owner.IndicatorCount = windowCount;
+                            needsRepaint = true;
                         }
 
-                        string currentTitle = GetWindowTitle(topHwnd);
+                        string currentTitle = GetWindowTitle(item.WindowHandle);
                         if (string.IsNullOrWhiteSpace(currentTitle))
                         {
                             string path = item.ExePath;
+                            string procName = GetProcessNameFromPath(path);
                             string fallbackTitle = "";
                             try
                             {
@@ -2655,15 +3227,11 @@ namespace OpenDock
                         {
                             item.DisplayName = currentTitle;
                             item.Owner._appName = currentTitle;
-                            UpdateSingleIconPosition(item);
+                            needsRepaint = true;
                         }
-                    }
-                    else if (item.IsOpen)
-                    {
-                        item.IsOpen = false;
-                        item.WindowHandle = IntPtr.Zero;
-                        item.Owner.ShowIndicator = false;
-                        UpdateSingleIconPosition(item);
+
+                        if (needsRepaint)
+                            UpdateSingleIconPosition(item);
                     }
                 }
             }
@@ -2672,52 +3240,11 @@ namespace OpenDock
         // Animasyon Hesaplama Motoru (Delta Zamanlı Geçiş)
         private void UpdateAnimation(DockItemData data)
         {
-            double step = 0.12;
-
             // Handle scale-in animation for new items (like Task Manager placeholder)
             if (data.EnterProgress < 1.0)
             {
                 data.EnterProgress += 0.08;
                 if (data.EnterProgress > 1.0) data.EnterProgress = 1.0;
-            }
-
-            if (data.IsHovered)
-            {
-                data.CurrentProgress += step;
-                if (data.CurrentProgress > 1.0) data.CurrentProgress = 1.0;
-            }
-            else
-            {
-                data.CurrentProgress -= step;
-                if (data.CurrentProgress < 0.0)
-                {
-                    data.CurrentProgress = 0.0;
-                }
-            }
-
-            // Smoothly interpolate magnification
-            double magTarget = CurrentSettings.MagnificationEnabled ? data.TargetMagnification : 0.0;
-            double magDiff = magTarget - data.CurrentMagnification;
-            if (Math.Abs(magDiff) < 0.02)
-            {
-                data.CurrentMagnification = magTarget;
-            }
-            else
-            {
-                data.CurrentMagnification += magDiff * 0.35;
-            }
-
-            // Stop timer only if settled, not bouncing, and enter animation finished
-            bool isProgressSettled = (data.IsHovered && data.CurrentProgress >= 1.0) ||
-                                     (!data.IsHovered && data.CurrentProgress <= 0.0);
-            bool isMagSettled = Math.Abs(data.CurrentMagnification - magTarget) < 0.001;
-
-            if (isProgressSettled && isMagSettled && !data.IsBouncing && data.EnterProgress >= 1.0)
-            {
-                if (!data.IsHovered || data.CurrentProgress >= 1.0)
-                {
-                    data.AnimTimer.Stop();
-                }
             }
 
             // Apply Bouncing physics (trampoline spring effect)
@@ -2745,7 +3272,92 @@ namespace OpenDock
                 }
             }
 
+            if (!data.IsBouncing && data.EnterProgress >= 1.0)
+                data.AnimTimer.Stop();
+
             UpdateSingleIconPosition(data);
+        }
+
+        private static int GetAnimatedIconSize(DockItemData item)
+        {
+            int minimumSize = item.OriginalSize.Width;
+            int maximumSize = CurrentSettings.MagnificationEnabled
+                ? Math.Max(minimumSize, CurrentSettings.MagnifiedIconSize)
+                : minimumSize;
+            double progress = item.CurrentProgress;
+            double easedProgress = progress * progress * (3.0 - 2.0 * progress);
+            int size = minimumSize + (int)Math.Round((maximumSize - minimumSize) * easedProgress);
+            return Math.Max(1, (int)Math.Round(size * item.EnterProgress));
+        }
+
+        private void UpdateMagnifiedDockBounds()
+        {
+            if (_baseDockBounds.Width <= 0 || _baseDockBounds.Height <= 0 ||
+                _autoHideProgress > 0.01f)
+                return;
+
+            int mainAxisExpansion = 0;
+            int crossAxisExpansion = 0;
+            foreach (DockItemData item in _dockItems)
+            {
+                int expansion = Math.Max(0, GetAnimatedIconSize(item) - item.OriginalSize.Width);
+                mainAxisExpansion += expansion;
+                crossAxisExpansion = Math.Max(crossAxisExpansion, expansion);
+            }
+
+            Rectangle target = _baseDockBounds;
+            string position = CurrentSettings.DockPosition ?? "Bottom";
+            bool isVertical = position.Equals("Left", StringComparison.OrdinalIgnoreCase) ||
+                              position.Equals("Right", StringComparison.OrdinalIgnoreCase);
+
+            if (isVertical)
+            {
+                target.Y -= mainAxisExpansion / 2;
+                target.Height += mainAxisExpansion;
+                target.Width += crossAxisExpansion;
+                if (position.Equals("Right", StringComparison.OrdinalIgnoreCase))
+                    target.X -= crossAxisExpansion;
+            }
+            else
+            {
+                target.X -= mainAxisExpansion / 2;
+                target.Width += mainAxisExpansion;
+                target.Height += crossAxisExpansion;
+                if (position.Equals("Bottom", StringComparison.OrdinalIgnoreCase))
+                    target.Y -= crossAxisExpansion;
+            }
+
+            Rectangle workspace = Screen.FromRectangle(_baseDockBounds).WorkingArea;
+            if (target.Width > workspace.Width)
+            {
+                target.X = workspace.Left;
+                target.Width = workspace.Width;
+            }
+            else
+            {
+                target.X = Math.Clamp(target.X, workspace.Left, workspace.Right - target.Width);
+            }
+
+            if (target.Height > workspace.Height)
+            {
+                target.Y = workspace.Top;
+                target.Height = workspace.Height;
+            }
+            else
+            {
+                target.Y = Math.Clamp(target.Y, workspace.Top, workspace.Bottom - target.Height);
+            }
+
+            if (target == _magnifiedDockVisibleBounds)
+            {
+                return;
+            }
+
+            _magnifiedDockVisibleBounds = target;
+            Bounds = target;
+            ApplyDockRegion();
+            this.Invalidate();
+            UpdateAutoHidePositions();
         }
 
         private void UpdateSingleIconPosition(DockItemData item)
@@ -2755,22 +3367,25 @@ namespace OpenDock
             string pos = CurrentSettings.DockPosition ?? "Bottom";
             bool isVertical = pos.Equals("Left", StringComparison.OrdinalIgnoreCase) ||
                               pos.Equals("Right", StringComparison.OrdinalIgnoreCase);
-            int baseSize = CurrentSettings.DockIconSize;
 
             int minSize = item.OriginalSize.Width;
-            int maxSize = 48;
-            int currentSize = minSize + (int)((maxSize - minSize) * item.CurrentProgress);
-
-            if (CurrentSettings.MagnificationEnabled && item.CurrentMagnification > 0.001)
+            int currentSize = GetAnimatedIconSize(item);
+            int sizeDiff = Math.Max(0, currentSize - minSize);
+            int totalMainAxisExpansion = 0;
+            int expansionBeforeItem = 0;
+            bool reachedItem = false;
+            foreach (DockItemData candidate in _dockItems)
             {
-                int magBoost = (int)((CurrentSettings.MagnifiedIconSize - currentSize) * item.CurrentMagnification);
-                currentSize = Math.Min(currentSize + magBoost, CurrentSettings.MagnifiedIconSize);
+                int candidateExpansion = Math.Max(0, GetAnimatedIconSize(candidate) - candidate.OriginalSize.Width);
+                totalMainAxisExpansion += candidateExpansion;
+                if (!reachedItem)
+                {
+                    if (ReferenceEquals(candidate, item))
+                        reachedItem = true;
+                    else
+                        expansionBeforeItem += candidateExpansion;
+                }
             }
-
-            currentSize = (int)(currentSize * item.EnterProgress);
-
-            int sizeDiff = currentSize - minSize;
-            int maxYukseklik = 24;
 
             // Offset of the icon relative to the dock visible anchor point
             int offsetX = item.OriginalLocation.X - _dockVisibleLocation.X;
@@ -2782,19 +3397,15 @@ namespace OpenDock
 
             if (isVertical)
             {
-                currentY -= sizeDiff / 2;
-                if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
-                    currentX += (int)(maxYukseklik * item.CurrentProgress);
-                else
-                    currentX -= (int)(maxYukseklik * item.CurrentProgress) + sizeDiff;
+                currentY += expansionBeforeItem - totalMainAxisExpansion / 2;
+                if (pos.Equals("Right", StringComparison.OrdinalIgnoreCase))
+                    currentX -= sizeDiff;
             }
             else
             {
-                currentX -= sizeDiff / 2;
-                if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
-                    currentY += (int)(maxYukseklik * item.CurrentProgress);
-                else
-                    currentY -= (int)(maxYukseklik * item.CurrentProgress);
+                currentX += expansionBeforeItem - totalMainAxisExpansion / 2;
+                if (pos.Equals("Bottom", StringComparison.OrdinalIgnoreCase))
+                    currentY -= sizeDiff;
             }
 
             if (item.IsBouncing)
@@ -2809,24 +3420,29 @@ namespace OpenDock
                     currentY += (int)item.BounceY;
             }
 
+            item.Owner.ShowLabel = item.IsHovered && item.CurrentProgress > 0.08;
             item.Owner.UpdateBounds(currentX, currentY, currentSize);
-        }
-
-        private void PicBox_MouseEnter(DockItemData data)
-        {
-            data.IsHovered = true;
-            data.Owner.BringToTopNoActivate(); // gerek z-order gncellemesi  focus almadan en ne getirir
-            data.AnimTimer.Start();
-        }
-
-        private void PicBox_MouseLeave(DockItemData data)
-        {
-            data.IsHovered = false;
-            data.AnimTimer.Start();
         }
 
         private Icon? GetHighQualityIcon(string fileName)
         {
+            if (!string.IsNullOrWhiteSpace(fileName) && System.IO.Directory.Exists(fileName))
+            {
+                try
+                {
+                    string folderPng = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "folder.png");
+                    if (System.IO.File.Exists(folderPng))
+                    {
+                        using var bmp = new Bitmap(folderPng);
+                        IntPtr hIcon = bmp.GetHicon();
+                        Icon folderIcon = (Icon)Icon.FromHandle(hIcon).Clone();
+                        DestroyIcon(hIcon);
+                        return folderIcon;
+                    }
+                }
+                catch { }
+            }
+
             try
             {
                 SHFILEINFO shinfo = new SHFILEINFO();
@@ -2862,24 +3478,1264 @@ namespace OpenDock
             return null;
         }
 
-        private void FocusWindow(IntPtr hWnd)
+        private void FocusWindow(IntPtr hWnd, Rectangle? dockTarget = null)
         {
-            if (hWnd == IntPtr.Zero) return;
+            if (hWnd == IntPtr.Zero)
+                return;
+
+            const int SW_MINIMIZE = 6;
+            const int SW_RESTORE = 9;
 
             if (IsIconic(hWnd))
             {
-                const int SW_RESTORE = 9;
+                if (dockTarget.HasValue && TryTakeAnimationFrame(hWnd, out CachedAnimationFrame cachedFrame))
+                {
+                    StartRestoreAnimation(hWnd, cachedFrame, dockTarget.Value);
+                    return;
+                }
+
+                ShowWindow(hWnd, SW_RESTORE);
+                SetForegroundWindow(hWnd);
+                return;
+            }
+
+            if (dockTarget.HasValue)
+            {
+                StartMinimizeAnimation(hWnd, dockTarget.Value);
+                ShowWindow(hWnd, SW_MINIMIZE);
+                return;
+            }
+
+            ShowWindow(hWnd, SW_RESTORE);
+            SetForegroundWindow(hWnd);
+        }
+
+        private void InitializeMinimizeAnimationHook()
+        {
+            if (_minimizeWinEventHook != IntPtr.Zero)
+                return;
+
+            _minimizeWinEventDelegate = OnWindowMinimizeStarted;
+            _minimizeWinEventHook = SetWinEventHook(
+                EVENT_SYSTEM_MINIMIZESTART,
+                EVENT_SYSTEM_MINIMIZESTART,
+                IntPtr.Zero,
+                _minimizeWinEventDelegate,
+                0,
+                0,
+                WINEVENT_OUTOFCONTEXT | WINEVENT_SKIPOWNPROCESS);
+
+            _minimizeMouseHookDelegate = OnLowLevelMouseEvent;
+            _minimizeMouseHook = SetWindowsHookEx(
+                WH_MOUSE_LL,
+                _minimizeMouseHookDelegate,
+                GetModuleHandle(null),
+                0);
+        }
+
+        private void DisposeMinimizeAnimationHook()
+        {
+            if (_minimizeWinEventHook != IntPtr.Zero)
+            {
+                UnhookWinEvent(_minimizeWinEventHook);
+                _minimizeWinEventHook = IntPtr.Zero;
+            }
+
+            if (_minimizeMouseHook != IntPtr.Zero)
+            {
+                UnhookWindowsHookEx(_minimizeMouseHook);
+                _minimizeMouseHook = IntPtr.Zero;
+            }
+
+            _minimizeWinEventDelegate = null;
+            _minimizeMouseHookDelegate = null;
+            lock (_minimizeAnimationSync)
+            {
+                _minimizeAnimationsInFlight.Clear();
+                foreach (CachedAnimationFrame frame in _cachedAnimationFrames.Values)
+                    frame.Snapshot.Dispose();
+                _cachedAnimationFrames.Clear();
+                _pendingMinimizeSnapshot?.Dispose();
+                _pendingMinimizeSnapshot = null;
+                _pendingMinimizeWindow = IntPtr.Zero;
+            }
+        }
+
+        private IntPtr OnLowLevelMouseEvent(int nCode, IntPtr wParam, IntPtr lParam)
+        {
+            if (nCode >= 0 && wParam == (IntPtr)WM_LBUTTONDOWN)
+            {
+                try
+                {
+                    LowLevelMouseHookData mouseData = Marshal.PtrToStructure<LowLevelMouseHookData>(lParam);
+                    CaptureFrameBeforeMinimizeClick(mouseData.Point);
+                }
+                catch
+                {
+                    // Bir giriş hook'u asla kullanıcı tıklamasını engellememeli.
+                }
+            }
+
+            return CallNextHookEx(_minimizeMouseHook, nCode, wParam, lParam);
+        }
+
+        private void CaptureFrameBeforeMinimizeClick(NativePoint screenPoint)
+        {
+            IntPtr clickedWindow = WindowFromPoint(screenPoint);
+            if (clickedWindow == IntPtr.Zero)
+                return;
+
+            IntPtr rootWindow = GetAncestor(clickedWindow, GA_ROOT);
+            if (rootWindow == IntPtr.Zero || rootWindow != GetForegroundWindow() || rootWindow == Handle)
+                return;
+
+            GetWindowThreadProcessId(rootWindow, out uint processId);
+            if (processId == (uint)Environment.ProcessId ||
+                !GetWindowRect(rootWindow, out RECT rect))
+            {
+                return;
+            }
+
+            int width = rect.Right - rect.Left;
+            int height = rect.Bottom - rect.Top;
+            int titleBandHeight = Math.Clamp(height / 8, 36, 96);
+            bool nearCaptionButtons = screenPoint.Y >= rect.Top &&
+                                      screenPoint.Y <= rect.Top + titleBandHeight &&
+                                      screenPoint.X >= rect.Right - Math.Min(240, Math.Max(120, width / 3)) &&
+                                      screenPoint.X <= rect.Right - 48;
+            if (!nearCaptionButtons)
+                return;
+
+            int packedCoordinates = unchecked(
+                (ushort)screenPoint.X |
+                ((ushort)screenPoint.Y << 16));
+            bool isNativeMinimizeButton = false;
+            if (SendMessageTimeout(
+                    rootWindow,
+                    WM_NCHITTEST,
+                    IntPtr.Zero,
+                    (IntPtr)packedCoordinates,
+                    SMTO_ABORTIFHUNG,
+                    40,
+                    out IntPtr hitTestResult) != IntPtr.Zero)
+            {
+                isNativeMinimizeButton = hitTestResult.ToInt32() == HTMINBUTTON;
+            }
+
+            // Chromium/WinUI uygulamaları caption düğmelerini client alanında çizer;
+            // bu yüzden üst-sağ düğme bandını da aday sayıyoruz. Yanlış aday yalnızca
+            // kısa ömürlü bir ön-kare oluşturur; minimize olayı gelmezse kullanılmaz.
+            if (!isNativeMinimizeButton && screenPoint.X < rect.Right - 220)
+                return;
+
+            if (!TryCaptureWindow(rootWindow, out Bitmap? snapshot, out Rectangle bounds) || snapshot == null)
+                return;
+
+            lock (_minimizeAnimationSync)
+            {
+                _pendingMinimizeSnapshot?.Dispose();
+                _pendingMinimizeSnapshot = snapshot;
+                _pendingMinimizeBounds = bounds;
+                _pendingMinimizeWindow = rootWindow;
+                _pendingMinimizeCapturedAt = Environment.TickCount64;
+            }
+        }
+
+        private void OnWindowMinimizeStarted(
+            IntPtr hWinEventHook,
+            uint eventType,
+            IntPtr hWnd,
+            int idObject,
+            int idChild,
+            uint eventThread,
+            uint eventTime)
+        {
+            if (eventType != EVENT_SYSTEM_MINIMIZESTART || hWnd == IntPtr.Zero ||
+                IsDisposed || Disposing || !IsHandleCreated || !TryReserveMinimizeAnimation(hWnd))
+            {
+                return;
+            }
+
+            if (!TryTakePendingMinimizeFrame(hWnd, out Bitmap? snapshot, out Rectangle sourceBounds) &&
+                (!TryCaptureWindow(hWnd, out snapshot, out sourceBounds) || snapshot == null))
+            {
+                ReleaseMinimizeAnimation(hWnd);
+                return;
+            }
+
+            Bitmap capturedSnapshot = snapshot!;
+
+            string appKey = GetWindowAppKey(hWnd);
+            try
+            {
+                BeginInvoke(new Action(() =>
+                {
+                    Rectangle? target = ResolveDockTarget(hWnd, appKey);
+                    if (!target.HasValue)
+                    {
+                        capturedSnapshot.Dispose();
+                        ReleaseMinimizeAnimation(hWnd);
+                        return;
+                    }
+
+                    ShowMinimizeAnimation(hWnd, capturedSnapshot, sourceBounds, target.Value);
+                }));
+            }
+            catch
+            {
+                capturedSnapshot.Dispose();
+                ReleaseMinimizeAnimation(hWnd);
+            }
+        }
+
+        private bool TryTakePendingMinimizeFrame(
+            IntPtr hWnd,
+            out Bitmap? snapshot,
+            out Rectangle bounds)
+        {
+            lock (_minimizeAnimationSync)
+            {
+                bool isFresh = Environment.TickCount64 - _pendingMinimizeCapturedAt <= 2_000;
+                if (isFresh && _pendingMinimizeWindow == hWnd && _pendingMinimizeSnapshot != null)
+                {
+                    snapshot = _pendingMinimizeSnapshot;
+                    bounds = _pendingMinimizeBounds;
+                    _pendingMinimizeSnapshot = null;
+                    _pendingMinimizeWindow = IntPtr.Zero;
+                    return true;
+                }
+
+                if (_pendingMinimizeSnapshot != null && !isFresh)
+                {
+                    _pendingMinimizeSnapshot.Dispose();
+                    _pendingMinimizeSnapshot = null;
+                    _pendingMinimizeWindow = IntPtr.Zero;
+                }
+            }
+
+            snapshot = null;
+            bounds = Rectangle.Empty;
+            return false;
+        }
+
+        private void StartMinimizeAnimation(IntPtr hWnd, Rectangle dockTarget)
+        {
+            if (!TryReserveMinimizeAnimation(hWnd))
+                return;
+
+            if (!TryCaptureWindow(hWnd, out Bitmap? snapshot, out Rectangle sourceBounds) || snapshot == null)
+            {
+                ReleaseMinimizeAnimation(hWnd);
+                return;
+            }
+
+            ShowMinimizeAnimation(hWnd, snapshot, sourceBounds, dockTarget);
+        }
+
+        private void ShowMinimizeAnimation(
+            IntPtr hWnd,
+            Bitmap snapshot,
+            Rectangle sourceBounds,
+            Rectangle dockTarget)
+        {
+            try
+            {
+                var animation = new DockMinimizeAnimationForm(snapshot, sourceBounds, dockTarget, reverse: false);
+                StoreAnimationFrame(hWnd, animation.CreateSnapshotCopy(), sourceBounds);
+                animation.FormClosed += (s, e) => ReleaseMinimizeAnimation(hWnd);
+                animation.Show();
+                animation.StartAnimation();
+            }
+            catch
+            {
+                snapshot.Dispose();
+                ReleaseMinimizeAnimation(hWnd);
+            }
+        }
+
+        private void StartRestoreAnimation(IntPtr hWnd, CachedAnimationFrame cachedFrame, Rectangle dockTarget)
+        {
+            const int SW_RESTORE = 9;
+
+            if (!TryReserveMinimizeAnimation(hWnd))
+            {
+                cachedFrame.Snapshot.Dispose();
+                ShowWindow(hWnd, SW_RESTORE);
+                SetForegroundWindow(hWnd);
+                return;
+            }
+
+            try
+            {
+                var animation = new DockMinimizeAnimationForm(
+                    cachedFrame.Snapshot,
+                    cachedFrame.WindowBounds,
+                    dockTarget,
+                    reverse: true);
+                animation.FormClosed += (s, e) =>
+                {
+                    ReleaseMinimizeAnimation(hWnd);
+                    ShowWindow(hWnd, SW_RESTORE);
+                    SetForegroundWindow(hWnd);
+                };
+                animation.Show();
+                animation.StartAnimation();
+            }
+            catch
+            {
+                cachedFrame.Snapshot.Dispose();
+                ReleaseMinimizeAnimation(hWnd);
                 ShowWindow(hWnd, SW_RESTORE);
                 SetForegroundWindow(hWnd);
             }
-            else if (GetForegroundWindow() == hWnd)
+        }
+
+        private void StoreAnimationFrame(IntPtr hWnd, Bitmap snapshot, Rectangle windowBounds)
+        {
+            lock (_minimizeAnimationSync)
             {
-                const int SW_MINIMIZE = 6;
-                ShowWindow(hWnd, SW_MINIMIZE);
+                if (_cachedAnimationFrames.Remove(hWnd, out CachedAnimationFrame? previousFrame))
+                    previousFrame.Snapshot.Dispose();
+
+                _cachedAnimationFrames[hWnd] = new CachedAnimationFrame(snapshot, windowBounds);
             }
-            else
+        }
+
+        private bool TryTakeAnimationFrame(IntPtr hWnd, out CachedAnimationFrame frame)
+        {
+            lock (_minimizeAnimationSync)
             {
-                SetForegroundWindow(hWnd);
+                if (_cachedAnimationFrames.Remove(hWnd, out CachedAnimationFrame? cachedFrame))
+                {
+                    frame = cachedFrame;
+                    return true;
+                }
+            }
+
+            frame = null!;
+            return false;
+        }
+
+        private bool TryReserveMinimizeAnimation(IntPtr hWnd)
+        {
+            lock (_minimizeAnimationSync)
+                return _minimizeAnimationsInFlight.Add(hWnd);
+        }
+
+        private void ReleaseMinimizeAnimation(IntPtr hWnd)
+        {
+            lock (_minimizeAnimationSync)
+                _minimizeAnimationsInFlight.Remove(hWnd);
+        }
+
+        private Rectangle? ResolveDockTarget(IntPtr hWnd, string appKey)
+        {
+            DockItemData? item = _dockItems.FirstOrDefault(candidate => candidate.WindowHandle == hWnd);
+            if (item == null && !string.IsNullOrWhiteSpace(appKey))
+            {
+                item = _dockItems.FirstOrDefault(candidate =>
+                    candidate.AppKey.Equals(appKey, StringComparison.OrdinalIgnoreCase));
+            }
+
+            return item == null
+                ? null
+                : new Rectangle(item.OriginalLocation, item.OriginalSize);
+        }
+
+        private static string GetWindowAppKey(IntPtr hWnd)
+        {
+            GetWindowThreadProcessId(hWnd, out uint processId);
+            if (processId == 0)
+                return "";
+
+            try
+            {
+                using Process process = Process.GetProcessById((int)processId);
+                return NormalizeAppKey(GetProcessFilePath(process));
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static bool TryCaptureWindow(IntPtr hWnd, out Bitmap? snapshot, out Rectangle bounds)
+        {
+            snapshot = null;
+            bounds = Rectangle.Empty;
+            if (!GetWindowRect(hWnd, out RECT windowRect))
+                return false;
+
+            int width = windowRect.Right - windowRect.Left;
+            int height = windowRect.Bottom - windowRect.Top;
+            bool usesIconicCoordinates = windowRect.Left <= -30000 || windowRect.Top <= -30000;
+            if (usesIconicCoordinates || width < 2 || height < 2)
+            {
+                var placement = new WINDOWPLACEMENT
+                {
+                    Length = (uint)Marshal.SizeOf<WINDOWPLACEMENT>()
+                };
+
+                if (!GetWindowPlacement(hWnd, ref placement))
+                    return false;
+
+                windowRect = placement.NormalPosition;
+                width = windowRect.Right - windowRect.Left;
+                height = windowRect.Bottom - windowRect.Top;
+            }
+
+            if (width < 2 || height < 2 || width > 8192 || height > 8192)
+                return false;
+
+            bounds = new Rectangle(windowRect.Left, windowRect.Top, width, height);
+            // PrintWindow frequently leaves the alpha channel at zero or only fills it
+            // partially. Capture as opaque RGB so the layered Genie surface cannot
+            // become invisible even though the window pixels were captured correctly.
+            var bitmap = new Bitmap(width, height, System.Drawing.Imaging.PixelFormat.Format32bppRgb);
+            bool captured = false;
+
+            using (Graphics graphics = Graphics.FromImage(bitmap))
+            {
+                // Pencere hâlâ ekrandayken ilk görünen kareyi doğrudan bir kez yakala.
+                // Animasyonun bütün kareleri bundan sonra yalnızca bu bitmap'i kullanır.
+                if (!usesIconicCoordinates)
+                {
+                    try
+                    {
+                        graphics.CopyFromScreen(bounds.Location, Point.Empty, bounds.Size, CopyPixelOperation.SourceCopy);
+                        captured = true;
+                    }
+                    catch
+                    {
+                        captured = false;
+                    }
+                }
+
+                // Bazı pencerelerde olay geldiğinde koordinatlar çoktan iconic konuma
+                // taşınmıştır. O durumda eski konumdan ekran kopyalamak duvar kağıdını
+                // yakalayacağı için yalnızca pencerenin saklanan yüzeyini isteriz.
+                if (!captured)
+                {
+                    graphics.Clear(Color.Black);
+                    IntPtr hdc = graphics.GetHdc();
+                    try
+                    {
+                        const uint PW_RENDERFULLCONTENT = 0x00000002;
+                        captured = PrintWindow(hWnd, hdc, PW_RENDERFULLCONTENT);
+                    }
+                    finally
+                    {
+                        graphics.ReleaseHdc(hdc);
+                    }
+
+                    // PrintWindow bazı GPU hızlandırmalı uygulamalarda true döndürüp
+                    // tamamen siyah bir yüzey verebilir; bunu animasyona taşımıyoruz.
+                    captured = captured && HasVisibleCaptureContent(bitmap);
+                }
+            }
+
+            if (!captured)
+            {
+                bitmap.Dispose();
+                return false;
+            }
+
+            snapshot = bitmap;
+            return true;
+        }
+
+        private static bool HasVisibleCaptureContent(Bitmap bitmap)
+        {
+            const int sampleColumns = 12;
+            const int sampleRows = 8;
+            int visibleSamples = 0;
+            int darkest = 255;
+            int lightest = 0;
+
+            for (int row = 0; row < sampleRows; row++)
+            {
+                int y = Math.Clamp((row * bitmap.Height + bitmap.Height / 2) / sampleRows, 0, bitmap.Height - 1);
+                for (int column = 0; column < sampleColumns; column++)
+                {
+                    int x = Math.Clamp((column * bitmap.Width + bitmap.Width / 2) / sampleColumns, 0, bitmap.Width - 1);
+                    Color pixel = bitmap.GetPixel(x, y);
+                    int brightness = Math.Max(pixel.R, Math.Max(pixel.G, pixel.B));
+                    darkest = Math.Min(darkest, brightness);
+                    lightest = Math.Max(lightest, brightness);
+                    if (brightness > 12)
+                        visibleSamples++;
+                }
+            }
+
+            return visibleSamples >= 2 || lightest - darkest >= 10;
+        }
+
+        private sealed class DockMinimizeAnimationForm : Form
+        {
+            private const int FrameIntervalMilliseconds = 33;
+            private const double AnimationDurationMilliseconds = 420.0;
+            private const float GenieHorizontalDelay = 0.65f;
+            private const float GenieTravelDelay = 0.20f;
+            private const float GenieGlowRadius = 55f;
+            private const int MaximumPreviewWidth = 960;
+            private const int MaximumPreviewHeight = 600;
+            private const int MaximumPreviewPixels = 480_000;
+            private const int WS_EX_LAYERED = 0x00080000;
+            private const int WS_EX_TRANSPARENT = 0x00000020;
+            private const int ULW_ALPHA = 0x00000002;
+            private const byte AC_SRC_OVER = 0x00;
+            private const byte AC_SRC_ALPHA = 0x01;
+            private readonly Bitmap _snapshot;
+            private readonly Rectangle _sourceBounds;
+            private readonly Rectangle _targetBounds;
+            private readonly System.Windows.Forms.Timer _timer;
+            private readonly bool _reverse;
+            private readonly Stopwatch _animationClock = new();
+            private readonly uint[] _srcPixels;
+            private readonly int _srcWidth;
+            private readonly int _srcHeight;
+            private readonly List<AnimationSlice> _slices = new(480);
+            private IntPtr _screenDc = IntPtr.Zero;
+            private IntPtr _memoryDc = IntPtr.Zero;
+            private IntPtr _currentDib = IntPtr.Zero;
+            private IntPtr _oldBitmap = IntPtr.Zero;
+            private IntPtr _dibBits = IntPtr.Zero;
+            private int _dibWidth = 0;
+            private int _dibHeight = 0;
+
+            [DllImport("user32.dll", ExactSpelling = true, SetLastError = true)]
+            private static extern bool UpdateLayeredWindow(
+                IntPtr hWnd,
+                IntPtr hdcDst,
+                ref LayerPoint pptDst,
+                ref LayerSize psize,
+                IntPtr hdcSrc,
+                ref LayerPoint pptSrc,
+                int crKey,
+                ref BlendFunction pblend,
+                int dwFlags);
+
+            [DllImport("user32.dll", ExactSpelling = true)]
+            private static extern IntPtr GetDC(IntPtr hWnd);
+
+            [DllImport("user32.dll", ExactSpelling = true)]
+            private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+            [DllImport("gdi32.dll", ExactSpelling = true)]
+            private static extern IntPtr CreateCompatibleDC(IntPtr hDC);
+
+            [DllImport("gdi32.dll", ExactSpelling = true)]
+            private static extern IntPtr SelectObject(IntPtr hdc, IntPtr hgdiobj);
+
+            [DllImport("gdi32.dll", ExactSpelling = true)]
+            private static extern bool DeleteObject(IntPtr hObject);
+
+            [DllImport("gdi32.dll", ExactSpelling = true)]
+            private static extern bool DeleteDC(IntPtr hdc);
+
+            [DllImport("gdi32.dll", ExactSpelling = true)]
+            private static extern IntPtr CreateDIBSection(
+                IntPtr hdc,
+                ref LayerBitmapInfo pbmi,
+                uint usage,
+                out IntPtr bits,
+                IntPtr section,
+                uint offset);
+
+            [DllImport("kernel32.dll", EntryPoint = "RtlMoveMemory")]
+            private static extern void CopyMemory(IntPtr destination, IntPtr source, UIntPtr length);
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct LayerPoint
+            {
+                public int X;
+                public int Y;
+
+                public LayerPoint(int x, int y)
+                {
+                    X = x;
+                    Y = y;
+                }
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct LayerSize
+            {
+                public int Width;
+                public int Height;
+
+                public LayerSize(int width, int height)
+                {
+                    Width = width;
+                    Height = height;
+                }
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct BlendFunction
+            {
+                public byte BlendOp;
+                public byte BlendFlags;
+                public byte SourceConstantAlpha;
+                public byte AlphaFormat;
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct LayerBitmapInfoHeader
+            {
+                public uint Size;
+                public int Width;
+                public int Height;
+                public ushort Planes;
+                public ushort BitCount;
+                public uint Compression;
+                public uint SizeImage;
+                public int XPelsPerMeter;
+                public int YPelsPerMeter;
+                public uint ColorsUsed;
+                public uint ColorsImportant;
+            }
+
+            [StructLayout(LayoutKind.Sequential)]
+            private struct LayerBitmapInfo
+            {
+                public LayerBitmapInfoHeader Header;
+                public uint Colors;
+            }
+
+            private readonly record struct AnimationSlice(RectangleF Source, RectangleF Destination);
+
+            public DockMinimizeAnimationForm(
+                Bitmap snapshot,
+                Rectangle sourceBounds,
+                Rectangle targetBounds,
+                bool reverse)
+            {
+                _snapshot = CreateAnimationPreview(snapshot);
+                snapshot.Dispose();
+                _srcWidth = _snapshot.Width;
+                _srcHeight = _snapshot.Height;
+                _srcPixels = new uint[_srcWidth * _srcHeight];
+                ExtractPixels(_snapshot, _srcPixels);
+                _screenDc = GetDC(IntPtr.Zero);
+                _memoryDc = CreateCompatibleDC(_screenDc);
+                _sourceBounds = sourceBounds;
+                _reverse = reverse;
+                _targetBounds = new Rectangle(
+                    targetBounds.X,
+                    targetBounds.Y,
+                    Math.Max(4, targetBounds.Width),
+                    Math.Max(4, targetBounds.Height));
+
+                AutoScaleMode = AutoScaleMode.None;
+                FormBorderStyle = FormBorderStyle.None;
+                ShowInTaskbar = false;
+                StartPosition = FormStartPosition.Manual;
+                TopMost = true;
+                Bounds = sourceBounds;
+
+                _timer = new System.Windows.Forms.Timer { Interval = FrameIntervalMilliseconds };
+                _timer.Tick += AnimationTick;
+            }
+
+            public Bitmap CreateSnapshotCopy()
+            {
+                return (Bitmap)_snapshot.Clone();
+            }
+
+            private static Bitmap CreateAnimationPreview(Bitmap source)
+            {
+                double pixelScale = Math.Sqrt(MaximumPreviewPixels / (double)Math.Max(1L, (long)source.Width * source.Height));
+                double scale = Math.Min(
+                    1.0,
+                    Math.Min(
+                        Math.Min(MaximumPreviewWidth / (double)source.Width, MaximumPreviewHeight / (double)source.Height),
+                        pixelScale));
+                int width = Math.Max(1, (int)Math.Round(source.Width * scale));
+                int height = Math.Max(1, (int)Math.Round(source.Height * scale));
+                var preview = new Bitmap(
+                    width,
+                    height,
+                    System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+
+                using Graphics graphics = Graphics.FromImage(preview);
+                graphics.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
+                graphics.CompositingQuality = System.Drawing.Drawing2D.CompositingQuality.HighSpeed;
+                graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.Bilinear;
+                graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighSpeed;
+                graphics.DrawImage(source, new Rectangle(0, 0, width, height));
+                return preview;
+            }
+
+            private static unsafe void ExtractPixels(Bitmap bmp, uint[] output)
+            {
+                int w = bmp.Width;
+                int h = bmp.Height;
+                var data = bmp.LockBits(
+                    new Rectangle(0, 0, w, h),
+                    System.Drawing.Imaging.ImageLockMode.ReadOnly,
+                    System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+                try
+                {
+                    fixed (uint* dst = output)
+                    {
+                        byte* src = (byte*)data.Scan0;
+                        int stride = data.Stride;
+                        int rowBytes = w * 4;
+                        for (int y = 0; y < h; y++)
+                        {
+                            Buffer.MemoryCopy(src + y * stride, dst + y * w, rowBytes, rowBytes);
+                        }
+                    }
+                }
+                finally
+                {
+                    bmp.UnlockBits(data);
+                }
+            }
+
+            protected override bool ShowWithoutActivation => true;
+
+            protected override CreateParams CreateParams
+            {
+                get
+                {
+                    CreateParams cp = base.CreateParams;
+                    cp.ExStyle |= WS_EX_NOACTIVATE | WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT;
+                    return cp;
+                }
+            }
+
+            public void StartAnimation()
+            {
+                try
+                {
+                    // Draw one frame immediately. During a native title-bar minimize,
+                    // Windows can hold the UI queue longer than the entire animation.
+                    _animationClock.Restart();
+                    RenderFrame(_reverse ? 1.0 : 0.0);
+                    _timer.Start();
+                }
+                catch
+                {
+                    Close();
+                }
+            }
+
+            private void AnimationTick(object? sender, EventArgs e)
+            {
+                try
+                {
+                    double timelineProgress = Math.Clamp(
+                        _animationClock.Elapsed.TotalMilliseconds / AnimationDurationMilliseconds,
+                        0.0,
+                        1.0);
+                    RenderFrame(_reverse ? 1.0 - timelineProgress : timelineProgress);
+
+                    if (timelineProgress >= 1.0)
+                    {
+                        _timer.Stop();
+                        _animationClock.Stop();
+                        Close();
+                    }
+                }
+                catch
+                {
+                    _timer.Stop();
+                    _animationClock.Stop();
+                    Close();
+                }
+            }
+
+            private unsafe void EnsureDibBuffer(int width, int height)
+            {
+                if (_dibWidth == width && _dibHeight == height && _currentDib != IntPtr.Zero && _dibBits != IntPtr.Zero)
+                {
+                    new Span<byte>((void*)_dibBits, checked(width * height * 4)).Clear();
+                    return;
+                }
+
+                if (_oldBitmap != IntPtr.Zero)
+                {
+                    SelectObject(_memoryDc, _oldBitmap);
+                    _oldBitmap = IntPtr.Zero;
+                }
+                if (_currentDib != IntPtr.Zero)
+                {
+                    DeleteObject(_currentDib);
+                    _currentDib = IntPtr.Zero;
+                    _dibBits = IntPtr.Zero;
+                }
+
+                _dibWidth = width;
+                _dibHeight = height;
+
+                var bitmapInfo = new LayerBitmapInfo
+                {
+                    Header = new LayerBitmapInfoHeader
+                    {
+                        Size = (uint)Marshal.SizeOf<LayerBitmapInfoHeader>(),
+                        Width = width,
+                        Height = -height,
+                        Planes = 1,
+                        BitCount = 32,
+                        Compression = 0
+                    }
+                };
+
+                _currentDib = CreateDIBSection(_screenDc, ref bitmapInfo, 0, out _dibBits, IntPtr.Zero, 0);
+                if (_currentDib != IntPtr.Zero && _dibBits != IntPtr.Zero)
+                {
+                    _oldBitmap = SelectObject(_memoryDc, _currentDib);
+                    new Span<byte>((void*)_dibBits, checked(width * height * 4)).Clear();
+                }
+            }
+
+            private void UpdateLayeredWindowDirect(Point screenLocation, int width, int height, byte opacity)
+            {
+                if (_currentDib == IntPtr.Zero || _dibBits == IntPtr.Zero || _memoryDc == IntPtr.Zero || _screenDc == IntPtr.Zero)
+                    return;
+
+                var destination = new LayerPoint(screenLocation.X, screenLocation.Y);
+                var size = new LayerSize(width, height);
+                var source = new LayerPoint(0, 0);
+                var blend = new BlendFunction
+                {
+                    BlendOp = AC_SRC_OVER,
+                    BlendFlags = 0,
+                    SourceConstantAlpha = opacity,
+                    AlphaFormat = AC_SRC_ALPHA
+                };
+
+                UpdateLayeredWindow(
+                    Handle,
+                    _screenDc,
+                    ref destination,
+                    ref size,
+                    _memoryDc,
+                    ref source,
+                    0,
+                    ref blend,
+                    ULW_ALPHA);
+            }
+
+            [MethodImpl(MethodImplOptions.AggressiveInlining)]
+            private static unsafe uint SampleBilinear(uint* src, int srcW, int srcH, float sx, float sy)
+            {
+                if (sx < 0f) sx = 0f;
+                else if (sx > srcW - 1.001f) sx = srcW - 1.001f;
+                if (sy < 0f) sy = 0f;
+                else if (sy > srcH - 1.001f) sy = srcH - 1.001f;
+
+                int x0 = (int)sx;
+                int y0 = (int)sy;
+                int x1 = x0 + 1;
+                int y1 = y0 + 1;
+                if (x1 >= srcW) x1 = srcW - 1;
+                if (y1 >= srcH) y1 = srcH - 1;
+
+                float fx = sx - x0;
+                float fy = sy - y0;
+
+                int ifx = (int)(fx * 256f);
+                int ify = (int)(fy * 256f);
+
+                int w00 = (256 - ifx) * (256 - ify);
+                int w10 = ifx * (256 - ify);
+                int w01 = (256 - ifx) * ify;
+                int w11 = ifx * ify;
+
+                int row0 = y0 * srcW;
+                int row1 = y1 * srcW;
+
+                uint c00 = src[row0 + x0];
+                uint c10 = src[row0 + x1];
+                uint c01 = src[row1 + x0];
+                uint c11 = src[row1 + x1];
+
+                uint b = (((c00 & 0xFF) * (uint)w00) + ((c10 & 0xFF) * (uint)w10) + ((c01 & 0xFF) * (uint)w01) + ((c11 & 0xFF) * (uint)w11)) >> 16;
+                uint g = ((((c00 >> 8) & 0xFF) * (uint)w00) + (((c10 >> 8) & 0xFF) * (uint)w10) + (((c01 >> 8) & 0xFF) * (uint)w01) + (((c11 >> 8) & 0xFF) * (uint)w11)) >> 16;
+                uint r = ((((c00 >> 16) & 0xFF) * (uint)w00) + (((c10 >> 16) & 0xFF) * (uint)w10) + (((c01 >> 16) & 0xFF) * (uint)w01) + (((c11 >> 16) & 0xFF) * (uint)w11)) >> 16;
+                uint a = ((((c00 >> 24) & 0xFF) * (uint)w00) + (((c10 >> 24) & 0xFF) * (uint)w10) + (((c01 >> 24) & 0xFF) * (uint)w01) + (((c11 >> 24) & 0xFF) * (uint)w11)) >> 16;
+
+                return (a << 24) | (r << 16) | (g << 8) | b;
+            }
+
+            private unsafe void RenderUndeformedFrame()
+            {
+                int width = Math.Max(1, _sourceBounds.Width);
+                int height = Math.Max(1, _sourceBounds.Height);
+
+                EnsureDibBuffer(width, height);
+                if (_dibBits == IntPtr.Zero)
+                    return;
+
+                uint* dst = (uint*)_dibBits;
+                fixed (uint* src = _srcPixels)
+                {
+                    float scaleX = (float)_srcWidth / width;
+                    float scaleY = (float)_srcHeight / height;
+
+                    for (int y = 0; y < height; y++)
+                    {
+                        float sy = (y + 0.5f) * scaleY;
+                        uint* row = dst + y * width;
+                        for (int x = 0; x < width; x++)
+                        {
+                            float sx = (x + 0.5f) * scaleX;
+                            row[x] = SampleBilinear(src, _srcWidth, _srcHeight, sx, sy);
+                        }
+                    }
+                }
+
+                UpdateLayeredWindowDirect(_sourceBounds.Location, width, height, 255);
+            }
+
+            private unsafe void RenderScaleFrame(double progress)
+            {
+                double p = EaseInOutCubic(progress);
+                int curX = (int)Math.Round(Lerp(_sourceBounds.Left, _targetBounds.Left, p));
+                int curY = (int)Math.Round(Lerp(_sourceBounds.Top, _targetBounds.Top, p));
+                int curW = Math.Max(2, (int)Math.Round(Lerp(_sourceBounds.Width, _targetBounds.Width, p)));
+                int curH = Math.Max(2, (int)Math.Round(Lerp(_sourceBounds.Height, _targetBounds.Height, p)));
+
+                EnsureDibBuffer(curW, curH);
+                if (_dibBits == IntPtr.Zero)
+                    return;
+
+                uint* dst = (uint*)_dibBits;
+                fixed (uint* src = _srcPixels)
+                {
+                    float scaleX = (float)_srcWidth / curW;
+                    float scaleY = (float)_srcHeight / curH;
+
+                    for (int y = 0; y < curH; y++)
+                    {
+                        float sy = (y + 0.5f) * scaleY;
+                        uint* row = dst + y * curW;
+                        for (int x = 0; x < curW; x++)
+                        {
+                            float sx = (x + 0.5f) * scaleX;
+                            row[x] = SampleBilinear(src, _srcWidth, _srcHeight, sx, sy);
+                        }
+                    }
+                }
+
+                UpdateLayeredWindowDirect(new Point(curX, curY), curW, curH, 255);
+            }
+
+            private unsafe void RenderFrame(double progress)
+            {
+                if (progress <= 0.0001)
+                {
+                    RenderUndeformedFrame();
+                    return;
+                }
+
+                if (string.Equals(CurrentSettings.MinimizeEffect, "Scale", StringComparison.OrdinalIgnoreCase))
+                {
+                    RenderScaleFrame(progress);
+                    return;
+                }
+
+                BuildSlices(progress);
+                if (_slices.Count == 0)
+                    return;
+
+                float minX = float.MaxValue;
+                float minY = float.MaxValue;
+                float maxX = float.MinValue;
+                float maxY = float.MinValue;
+                for (int i = 0; i < _slices.Count; i++)
+                {
+                    RectangleF dest = _slices[i].Destination;
+                    if (dest.Left < minX) minX = dest.Left;
+                    if (dest.Top < minY) minY = dest.Top;
+                    if (dest.Right > maxX) maxX = dest.Right;
+                    if (dest.Bottom > maxY) maxY = dest.Bottom;
+                }
+
+                if (progress > 0.75)
+                {
+                    PointF targetCenter = GetTargetCenter();
+                    minX = Math.Min(minX, targetCenter.X - GenieGlowRadius);
+                    minY = Math.Min(minY, targetCenter.Y - GenieGlowRadius);
+                    maxX = Math.Max(maxX, targetCenter.X + GenieGlowRadius);
+                    maxY = Math.Max(maxY, targetCenter.Y + GenieGlowRadius);
+                }
+
+                int left = (int)Math.Floor(minX) - 2;
+                int top = (int)Math.Floor(minY) - 2;
+                int width = Math.Max(1, (int)Math.Ceiling(maxX) - left + 2);
+                int height = Math.Max(1, (int)Math.Ceiling(maxY) - top + 2);
+
+                EnsureDibBuffer(width, height);
+                if (_dibBits == IntPtr.Zero)
+                    return;
+
+                uint* dst = (uint*)_dibBits;
+                fixed (uint* src = _srcPixels)
+                {
+                    for (int i = 0; i < _slices.Count; i++)
+                    {
+                        AnimationSlice slice = _slices[i];
+                        RectangleF destination = slice.Destination;
+                        if (destination.Width < 0.8f || destination.Height < 0.8f)
+                            continue;
+
+                        float dstLeft = destination.Left - left;
+                        float dstTop = destination.Top - top;
+                        float dstWidth = destination.Width;
+                        float dstHeight = destination.Height;
+
+                        int xStart = Math.Max(0, (int)Math.Floor(dstLeft));
+                        int xEnd = Math.Min(width, (int)Math.Ceiling(dstLeft + dstWidth));
+                        int yStart = Math.Max(0, (int)Math.Floor(dstTop));
+                        int yEnd = Math.Min(height, (int)Math.Ceiling(dstTop + dstHeight));
+
+                        if (xStart >= xEnd || yStart >= yEnd)
+                            continue;
+
+                        float invDstW = 1.0f / dstWidth;
+                        float invDstH = 1.0f / dstHeight;
+                        float srcLeft = slice.Source.Left;
+                        float srcTop = slice.Source.Top;
+                        float srcW = slice.Source.Width;
+                        float srcH = slice.Source.Height;
+
+                        for (int y = yStart; y < yEnd; y++)
+                        {
+                            float vNorm = (y + 0.5f - dstTop) * invDstH;
+                            if (vNorm < 0f) vNorm = 0f;
+                            else if (vNorm > 1f) vNorm = 1f;
+                            float sy = srcTop + vNorm * srcH;
+
+                            uint* row = dst + y * width;
+                            for (int x = xStart; x < xEnd; x++)
+                            {
+                                float uNorm = (x + 0.5f - dstLeft) * invDstW;
+                                if (uNorm < 0f) uNorm = 0f;
+                                else if (uNorm > 1f) uNorm = 1f;
+                                float sx = srcLeft + uNorm * srcW;
+
+                                row[x] = SampleBilinear(src, _srcWidth, _srcHeight, sx, sy);
+                            }
+                        }
+                    }
+
+                    DrawDockGlowDirect(dst, width, height, new Point(left, top), progress);
+                }
+
+                UpdateLayeredWindowDirect(new Point(left, top), width, height, 255);
+            }
+
+            private void BuildSlices(double progress)
+            {
+                _slices.Clear();
+                string position = CurrentSettings.DockPosition ?? "Bottom";
+                bool verticalDock = position.Equals("Left", StringComparison.OrdinalIgnoreCase) ||
+                                    position.Equals("Right", StringComparison.OrdinalIgnoreCase);
+                int sourceLength = verticalDock ? _snapshot.Width : _snapshot.Height;
+                // Eğrinin orta kısmında tam ayrıntı gerekir. Başlangıçta şekil neredeyse
+                // düz, sonda ise çok küçüktür; bu iki uçta daha az şerit aynı görüntüyü
+                // çok daha düşük gecikmeyle verir.
+                int maximumSliceCount = Math.Min(sourceLength, 480);
+                int minimumSliceCount = Math.Min(sourceLength, 72);
+                double curveDetail = Math.Pow(Math.Max(0.0, Math.Sin(Math.PI * progress)), 0.65);
+                int sliceCount = Math.Clamp(
+                    (int)Math.Round(minimumSliceCount +
+                                    ((maximumSliceCount - minimumSliceCount) * curveDetail)),
+                    1,
+                    maximumSliceCount);
+                const float destinationOverlap = 0.75f;
+                PointF targetCenter = GetTargetCenter();
+
+                for (int index = 0; index < sliceCount; index++)
+                {
+                    float start = index / (float)sliceCount;
+                    float end = (index + 1f) / sliceCount;
+                    float center = (start + end) * 0.5f;
+                    double squeezeEased = GetSqueezeEased(progress, GetProximityToDock(position, center));
+                    double startTravelEased = GetTravelEased(progress, GetProximityToDock(position, start));
+                    double endTravelEased = GetTravelEased(progress, GetProximityToDock(position, end));
+
+                    if (verticalDock)
+                    {
+                        float sourceX = start * _snapshot.Width;
+                        float sourceWidth = Math.Max(0f, (end - start) * _snapshot.Width);
+                        var source = new RectangleF(sourceX, 0, sourceWidth, _snapshot.Height);
+                        float sourceScreenStart = _sourceBounds.Left + start * _sourceBounds.Width;
+                        float sourceScreenEnd = _sourceBounds.Left + end * _sourceBounds.Width;
+                        float destinationStart = Lerp(sourceScreenStart, targetCenter.X, startTravelEased);
+                        float destinationEnd = Lerp(sourceScreenEnd, targetCenter.X, endTravelEased);
+                        float destinationTop = Lerp(_sourceBounds.Top, targetCenter.Y, squeezeEased);
+                        float destinationBottom = Lerp(_sourceBounds.Bottom, targetCenter.Y, squeezeEased);
+                        var destination = new RectangleF(
+                            Math.Min(destinationStart, destinationEnd) - destinationOverlap * 0.5f,
+                            Math.Min(destinationTop, destinationBottom),
+                            Math.Max(0f, Math.Abs(destinationEnd - destinationStart) + destinationOverlap),
+                            Math.Max(0f, Math.Abs(destinationBottom - destinationTop)));
+                        _slices.Add(new AnimationSlice(source, destination));
+                    }
+                    else
+                    {
+                        float sourceY = start * _snapshot.Height;
+                        float sourceHeight = Math.Max(0f, (end - start) * _snapshot.Height);
+                        var source = new RectangleF(0, sourceY, _snapshot.Width, sourceHeight);
+                        float sourceScreenStart = _sourceBounds.Top + start * _sourceBounds.Height;
+                        float sourceScreenEnd = _sourceBounds.Top + end * _sourceBounds.Height;
+                        float destinationStart = Lerp(sourceScreenStart, targetCenter.Y, startTravelEased);
+                        float destinationEnd = Lerp(sourceScreenEnd, targetCenter.Y, endTravelEased);
+                        float destinationLeft = Lerp(_sourceBounds.Left, targetCenter.X, squeezeEased);
+                        float destinationRight = Lerp(_sourceBounds.Right, targetCenter.X, squeezeEased);
+                        var destination = new RectangleF(
+                            Math.Min(destinationLeft, destinationRight),
+                            Math.Min(destinationStart, destinationEnd) - destinationOverlap * 0.5f,
+                            Math.Max(0f, Math.Abs(destinationRight - destinationLeft)),
+                            Math.Max(0f, Math.Abs(destinationEnd - destinationStart) + destinationOverlap));
+                        _slices.Add(new AnimationSlice(source, destination));
+                    }
+                }
+            }
+
+            private static float GetProximityToDock(string position, float normalizedPosition)
+            {
+                return position.Equals("Top", StringComparison.OrdinalIgnoreCase) ||
+                       position.Equals("Left", StringComparison.OrdinalIgnoreCase)
+                    ? 1f - normalizedPosition
+                    : normalizedPosition;
+            }
+
+            private static double GetSqueezeEased(double progress, float proximityToDock)
+            {
+                double squeezeStart = (1.0 - proximityToDock) * GenieHorizontalDelay;
+                return EaseInOutCubic(NormalizeDelayedProgress(progress, squeezeStart));
+            }
+
+            private static double GetTravelEased(double progress, float proximityToDock)
+            {
+                double travelStart = (1.0 - proximityToDock) * GenieTravelDelay;
+                double travelProgress = NormalizeDelayedProgress(progress, travelStart);
+                return travelProgress * travelProgress;
+            }
+
+            private PointF GetTargetCenter()
+            {
+                return new PointF(
+                    _targetBounds.Left + (_targetBounds.Width / 2f),
+                    _targetBounds.Top + (_targetBounds.Height / 2f));
+            }
+
+            private unsafe void DrawDockGlowDirect(uint* dst, int dstW, int dstH, Point frameOrigin, double progress)
+            {
+                if (progress <= 0.75)
+                    return;
+
+                double glowProgress = Math.Clamp((progress - 0.75) / 0.25, 0.0, 1.0);
+                double easedGlow = 1.0 - Math.Pow(1.0 - glowProgress, 2.0);
+                int maxAlpha = Math.Clamp((int)Math.Round(easedGlow * 0.30 * 255.0), 0, 255);
+                if (maxAlpha == 0)
+                    return;
+
+                PointF targetCenter = GetTargetCenter();
+                float cx = targetCenter.X - frameOrigin.X;
+                float cy = targetCenter.Y - frameOrigin.Y;
+                float radius = GenieGlowRadius;
+                float invRadius = 1.0f / radius;
+
+                int y0 = Math.Max(0, (int)Math.Floor(cy - radius));
+                int y1 = Math.Min(dstH, (int)Math.Ceiling(cy + radius));
+                int x0 = Math.Max(0, (int)Math.Floor(cx - radius));
+                int x1 = Math.Min(dstW, (int)Math.Ceiling(cx + radius));
+
+                for (int y = y0; y < y1; y++)
+                {
+                    float dy = y + 0.5f - cy;
+                    float dy2 = dy * dy;
+                    uint* row = dst + y * dstW;
+
+                    for (int x = x0; x < x1; x++)
+                    {
+                        float dx = x + 0.5f - cx;
+                        float dist = MathF.Sqrt(dx * dx + dy2);
+                        if (dist >= radius)
+                            continue;
+
+                        float factor = 1.0f - (dist * invRadius);
+                        int glowA = (int)(maxAlpha * factor);
+                        if (glowA <= 0)
+                            continue;
+
+                        uint current = row[x];
+                        uint dstB = current & 0xFF;
+                        uint dstG = (current >> 8) & 0xFF;
+                        uint dstR = (current >> 16) & 0xFF;
+                        uint dstA = (current >> 24) & 0xFF;
+
+                        int invSrcA = 255 - glowA;
+                        uint outB = (uint)(glowA + ((dstB * invSrcA) >> 8));
+                        uint outG = (uint)(glowA + ((dstG * invSrcA) >> 8));
+                        uint outR = (uint)(glowA + ((dstR * invSrcA) >> 8));
+                        uint outA = (uint)(glowA + ((dstA * invSrcA) >> 8));
+
+                        if (outB > 255) outB = 255;
+                        if (outG > 255) outG = 255;
+                        if (outR > 255) outR = 255;
+                        if (outA > 255) outA = 255;
+
+                        row[x] = (outA << 24) | (outR << 16) | (outG << 8) | outB;
+                    }
+                }
+            }
+
+            private static double NormalizeDelayedProgress(double progress, double delay)
+            {
+                return Math.Clamp((progress - delay) / (1.0 - delay), 0.0, 1.0);
+            }
+
+            private static double EaseInOutCubic(double progress)
+            {
+                return progress < 0.5
+                    ? 4.0 * progress * progress * progress
+                    : 1.0 - (Math.Pow((-2.0 * progress) + 2.0, 3.0) / 2.0);
+            }
+
+            private static float Lerp(float from, float to, double amount)
+            {
+                return (float)(from + ((to - from) * amount));
+            }
+
+            protected override void Dispose(bool disposing)
+            {
+                if (disposing)
+                {
+                    _timer.Dispose();
+                    _snapshot.Dispose();
+                }
+
+                if (_oldBitmap != IntPtr.Zero)
+                {
+                    SelectObject(_memoryDc, _oldBitmap);
+                    _oldBitmap = IntPtr.Zero;
+                }
+                if (_currentDib != IntPtr.Zero)
+                {
+                    DeleteObject(_currentDib);
+                    _currentDib = IntPtr.Zero;
+                    _dibBits = IntPtr.Zero;
+                }
+                if (_memoryDc != IntPtr.Zero)
+                {
+                    DeleteDC(_memoryDc);
+                    _memoryDc = IntPtr.Zero;
+                }
+                if (_screenDc != IntPtr.Zero)
+                {
+                    ReleaseDC(IntPtr.Zero, _screenDc);
+                    _screenDc = IntPtr.Zero;
+                }
+
+                base.Dispose(disposing);
             }
         }
 
@@ -2891,6 +4747,7 @@ namespace OpenDock
             get
             {
                 var cp = base.CreateParams;
+                cp.ClassStyle |= 0x0002 /* CS_HREDRAW */ | 0x0001 /* CS_VREDRAW */;
                 cp.ExStyle |= WS_EX_NOACTIVATE; // Never let dock steal focus - blur stays active forever
                 return cp;
             }
@@ -2924,15 +4781,27 @@ namespace OpenDock
             IntPtr exStyle = GetWindowLongPtr(this.Handle, GWL_EXSTYLE);
             SetWindowLong(this.Handle, GWL_EXSTYLE, new IntPtr(exStyle.ToInt32() | WS_EX_NOACTIVATE));
 
-            // Dock uses its own region mask; DWM rounding would add a second, mismatched corner shape.
-            int cornerPref = 1;
+            // Ask Windows 11 for its native small-radius corner AA; the Region remains
+            // as a Windows 10 fallback.
+            int cornerPref = 3;
             DwmSetWindowAttribute(this.Handle, 33, ref cornerPref, sizeof(int));
 
-            // Set Window Composition Accent Policy for Aero Blur (keeps blur active when deactivated)
+            Color tint = Color.FromArgb(CurrentSettings.DockColorArgb);
+            int tintAlpha = CurrentSettings.DockBackgroundAlpha == 0
+                ? 0
+                : Math.Clamp(CurrentSettings.DockBackgroundAlpha / 3, 18, 72);
+            int gradientColor = (tintAlpha << 24) |
+                                (tint.B << 16) |
+                                (tint.G << 8) |
+                                tint.R;
+
+            // Acrylic samples the pixels behind the Dock. The previous legacy blur
+            // state often rendered a flat tint on current Windows versions.
             var accent = new AccentPolicy
             {
-                AccentState = AccentState.ACCENT_ENABLE_BLURBEHIND,
-                GradientColor = 0x55181818
+                AccentState = AccentState.ACCENT_ENABLE_ACRYLICBLURBEHIND,
+                AccentFlags = 2,
+                GradientColor = gradientColor
             };
             var accentStructSize = Marshal.SizeOf(accent);
             var accentPtr = Marshal.AllocHGlobal(accentStructSize);
@@ -2945,7 +4814,14 @@ namespace OpenDock
                 Data = accentPtr
             };
 
-            SetWindowCompositionAttribute(this.Handle, ref data);
+            int result = SetWindowCompositionAttribute(this.Handle, ref data);
+            if (result == 0)
+            {
+                accent.AccentState = AccentState.ACCENT_ENABLE_BLURBEHIND;
+                accent.AccentFlags = 0;
+                Marshal.StructureToPtr(accent, accentPtr, false);
+                SetWindowCompositionAttribute(this.Handle, ref data);
+            }
             Marshal.FreeHGlobal(accentPtr);
         }
 
@@ -2953,27 +4829,50 @@ namespace OpenDock
         {
             var g = e.Graphics;
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
 
-            var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+            var rect = new Rectangle(1, 1, Math.Max(1, Width - 3), Math.Max(1, Height - 3));
             var dockColor = Color.FromArgb(CurrentSettings.DockColorArgb);
-            var glassColor = Color.FromArgb(74, dockColor.R, dockColor.G, dockColor.B);
+            int surfaceAlpha = CurrentSettings.DockBackgroundAlpha == 0
+                ? 0
+                : Math.Clamp(CurrentSettings.DockBackgroundAlpha / 7, 16, 42);
+            var glassColor = Color.FromArgb(surfaceAlpha, dockColor.R, dockColor.G, dockColor.B);
 
             g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
             g.Clear(Color.Transparent);
+            g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver;
+
+            var shadowRect = new Rectangle(
+                rect.X + 2,
+                rect.Y + 3,
+                Math.Max(1, rect.Width - 3),
+                Math.Max(1, rect.Height - 3));
+            using (var shadowPath = RoundedRect(shadowRect, DockCornerRadius))
+            using (var shadowBrush = new SolidBrush(Color.FromArgb(40, 0, 0, 0)))
+            {
+                g.FillPath(shadowBrush, shadowPath);
+            }
 
             using (var path = RoundedRect(rect, DockCornerRadius))
             using (var fillBrush = new SolidBrush(glassColor))
-            using (var borderPen = new Pen(Color.FromArgb(82, 255, 255, 255), 1f))
+            using (var borderPen = new Pen(Color.FromArgb(62, 255, 255, 255), 1f))
             using (var glossBrush = new System.Drawing.Drawing2D.LinearGradientBrush(
                 rect,
-                Color.FromArgb(26, 255, 255, 255),
+                Color.FromArgb(42, 255, 255, 255),
                 Color.FromArgb(3, 255, 255, 255),
-                System.Drawing.Drawing2D.LinearGradientMode.Vertical))
+                132f))
             {
                 g.FillPath(fillBrush, path);
-                g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver;
                 g.FillPath(glossBrush, path);
                 g.DrawPath(borderPen, path);
+            }
+
+            var innerRect = Rectangle.Inflate(rect, -1, -1);
+            if (innerRect.Width > 2 && innerRect.Height > 2)
+            {
+                using var innerPath = RoundedRect(innerRect, Math.Max(1, DockCornerRadius - 1));
+                using var innerBorder = new Pen(Color.FromArgb(18, 255, 255, 255), 1f);
+                g.DrawPath(innerBorder, innerPath);
             }
 
             // Draw vertical/horizontal separator line for the Windows button
@@ -3112,6 +5011,8 @@ namespace OpenDock
                 }
             });
             appearanceMenu.DropDownItems.Add(iconSizeMenu);
+            appearanceMenu.DropDownItems.Add(CreateDockLengthMenu());
+            appearanceMenu.DropDownItems.Add(CreateMinimizeEffectMenu());
 
             appearanceMenu.DropDownItems.Add("-");
             _showClockMenuItem = new ToolStripMenuItem(Loc.Get("show_clock"))
@@ -3175,6 +5076,7 @@ namespace OpenDock
     background-color: #181818;
     opacity: 175;
     icon-size: 32px;
+    dock-length: 640px;
     position: bottom;
     auto-hide: false;
 }
@@ -3408,7 +5310,7 @@ namespace OpenDock
             var aboutItem = new ToolStripMenuItem(Loc.Get("about"));
             aboutItem.Click += (s, e) =>
             {
-                var aboutForm = new AboutForm($"OpenDock v5.2.2", Loc.Get("about_msg"), Loc.Get("dialog_close"));
+                var aboutForm = new AboutForm($"OpenDock v6.0.0", Loc.Get("about_msg"), Loc.Get("dialog_close"));
                 aboutForm.ShowDialog(this);
             };
             contextMenu.Items.Add(aboutItem);
@@ -3487,7 +5389,7 @@ namespace OpenDock
 
         private static string ShowInputDialog(string text, string caption, string defaultValue)
         {
-            using Form prompt = new Form()
+            Form prompt = new Form()
             {
                 Width = 350,
                 Height = 160,
@@ -3717,7 +5619,7 @@ namespace OpenDock
 
             // Ignore any window belonging to OpenDock process
             GetWindowThreadProcessId(foregroundWnd, out uint pid);
-            if (pid == (uint)Environment.ProcessId) return false;
+            if (pid == (uint)Process.GetCurrentProcess().Id) return false;
 
             var className = new System.Text.StringBuilder(256);
             if (GetClassName(foregroundWnd, className, className.Capacity) > 0)
@@ -3795,85 +5697,79 @@ namespace OpenDock
             bool found = false;
             bool playing = false;
 
-            EnumWindows((hwnd, lParam) =>
+            // Scan all windows for known media player patterns
+            foreach (var proc in Process.GetProcesses())
             {
-                if (!IsWindowVisible(hwnd)) return true;
-
-                var sb = new System.Text.StringBuilder(256);
-                if (GetWindowText(hwnd, sb, sb.Capacity) <= 0) return true;
-                string wTitle = sb.ToString();
-                if (string.IsNullOrWhiteSpace(wTitle)) return true;
-
-                GetWindowThreadProcessId(hwnd, out uint pid);
-                if (pid == 0) return true;
-
-                string procName = GetProcessNameFromPid(pid);
-                if (string.IsNullOrEmpty(procName)) return true;
-
-                // Spotify: "Song - Artist" or "Spotify"
-                if (procName.Equals("Spotify", StringComparison.OrdinalIgnoreCase))
+                try
                 {
-                    found = true;
-                    if (wTitle.Contains(" - "))
-                    {
-                        var parts = wTitle.Split(new[] { " - " }, 2, StringSplitOptions.None);
-                        artist = parts[0].Trim();
-                        title = parts.Length > 1 ? parts[1].Trim() : "";
-                        playing = true;
-                    }
-                    else
-                    {
-                        title = "Spotify";
-                        artist = "Durduruldu";
-                        playing = false;
-                    }
-                    return false;
-                }
+                    string wTitle = proc.MainWindowTitle;
+                    if (string.IsNullOrWhiteSpace(wTitle)) continue;
 
-                // Browser-based players: "Song - Artist - YouTube" or similar
-                string pname = procName.ToLowerInvariant();
-                if (pname == "chrome" || pname == "msedge" || pname == "firefox" || pname == "opera" || pname == "brave")
-                {
-                    if (wTitle.Contains("YouTube") || wTitle.Contains("Spotify") || wTitle.Contains("SoundCloud") || wTitle.Contains("Apple Music"))
+                    // Spotify: "Song - Artist" or "Spotify"
+                    if (proc.ProcessName.Equals("Spotify", StringComparison.OrdinalIgnoreCase))
                     {
                         found = true;
-                        string cleaned = wTitle;
-                        string[] suffixes = { " - YouTube", " - Google Chrome", " - Microsoft Edge", " - Mozilla Firefox", " - Opera", " - Brave" };
-                        foreach (var suffix in suffixes)
+                        if (wTitle.Contains(" - "))
                         {
-                            if (cleaned.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
-                                cleaned = cleaned.Substring(0, cleaned.Length - suffix.Length);
-                        }
-                        if (cleaned.Contains(" - "))
-                        {
-                            var parts = cleaned.Split(new[] { " - " }, 2, StringSplitOptions.None);
+                            var parts = wTitle.Split(new[] { " - " }, 2, StringSplitOptions.None);
                             artist = parts[0].Trim();
                             title = parts.Length > 1 ? parts[1].Trim() : "";
                             playing = true;
                         }
                         else
                         {
-                            title = cleaned.Trim();
-                            artist = "Duraklatıldı";
+                            title = "Spotify";
+                            artist = "Durduruldu";
                             playing = false;
                         }
-                        return false;
+                        break;
+                    }
+
+                    // Browser-based players: "Song - Artist - YouTube" or similar
+                    string pname = proc.ProcessName.ToLower();
+                    if (pname == "chrome" || pname == "msedge" || pname == "firefox" || pname == "opera" || pname == "brave")
+                    {
+                        if (wTitle.Contains("YouTube") || wTitle.Contains("Spotify") || wTitle.Contains("SoundCloud") || wTitle.Contains("Apple Music"))
+                        {
+                            found = true;
+                            // Strip " - YouTube" etc. from end
+                            string cleaned = wTitle;
+                            string[] suffixes = { " - YouTube", " - Google Chrome", " - Microsoft Edge", " - Mozilla Firefox", " - Opera", " - Brave" };
+                            foreach (var suffix in suffixes)
+                            {
+                                if (cleaned.EndsWith(suffix, StringComparison.OrdinalIgnoreCase))
+                                    cleaned = cleaned.Substring(0, cleaned.Length - suffix.Length);
+                            }
+                            if (cleaned.Contains(" - "))
+                            {
+                                var parts = cleaned.Split(new[] { " - " }, 2, StringSplitOptions.None);
+                                artist = parts[0].Trim();
+                                title = parts.Length > 1 ? parts[1].Trim() : "";
+                                playing = true;
+                            }
+                            else
+                            {
+                                title = cleaned.Trim();
+                                artist = "Duraklatıldı";
+                                playing = false;
+                            }
+                            break;
+                        }
+                    }
+
+                    // Generic: VLC, foobar2000, etc.
+                    if (pname == "vlc" || pname.Contains("foobar") || pname == "wmplayer" || pname.Contains("musicbee"))
+                    {
+                        found = true;
+                        title = wTitle;
+                        playing = !wTitle.Equals("VLC media player", StringComparison.OrdinalIgnoreCase);
+                        if (!playing)
+                            artist = "Duraklatıldı";
+                        break;
                     }
                 }
-
-                // Generic: VLC, foobar2000, etc.
-                if (pname == "vlc" || pname.Contains("foobar") || pname == "wmplayer" || pname.Contains("musicbee"))
-                {
-                    found = true;
-                    title = wTitle;
-                    playing = !wTitle.Equals("VLC media player", StringComparison.OrdinalIgnoreCase);
-                    if (!playing)
-                        artist = "Duraklatıldı";
-                    return false;
-                }
-
-                return true;
-            }, IntPtr.Zero);
+                catch { }
+            }
 
             if (!found)
             {
@@ -4138,15 +6034,14 @@ namespace OpenDock
             if (_autoHideTimer != null && _autoHideProgress > 0.01f) return;
             _dockVisibleLocation = this.Location;
             string pos = CurrentSettings.DockPosition ?? "Bottom";
-            int hideOffset = Math.Max(this.Height, Math.Max(this.Width, 128)) + 35;
             if (pos.Equals("Bottom", StringComparison.OrdinalIgnoreCase))
-                _dockHiddenLocation = new Point(this.Left, this.Top + hideOffset);
+                _dockHiddenLocation = new Point(this.Left, this.Top + this.Height + 10);
             else if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
-                _dockHiddenLocation = new Point(this.Left, this.Top - hideOffset);
+                _dockHiddenLocation = new Point(this.Left, this.Top - this.Height - 10);
             else if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
-                _dockHiddenLocation = new Point(this.Left - hideOffset, this.Top);
+                _dockHiddenLocation = new Point(this.Left - this.Width - 10, this.Top);
             else if (pos.Equals("Right", StringComparison.OrdinalIgnoreCase))
-                _dockHiddenLocation = new Point(this.Left + hideOffset, this.Top);
+                _dockHiddenLocation = new Point(this.Left + this.Width + 10, this.Top);
         }
 
         private void AutoHideTimerTick()
@@ -4244,10 +6139,6 @@ namespace OpenDock
                         item.Owner.Show(this);
                     }
                 }
-                if (CurrentSettings.ShowMediaController && _mediaWidget != null && !_mediaWidget.IsDisposed && !_mediaWidget.Visible)
-                {
-                    _mediaWidget.Show(this);
-                }
                 UpdateClockVisibility();
             }
             else
@@ -4263,10 +6154,6 @@ namespace OpenDock
                     {
                         item.Owner.Hide();
                     }
-                }
-                if (_mediaWidget != null && !_mediaWidget.IsDisposed && _mediaWidget.Visible)
-                {
-                    _mediaWidget.Hide();
                 }
                 if (this.Visible)
                 {
@@ -4638,46 +6525,11 @@ namespace OpenDock
 
             protected override void OnFormClosing(FormClosingEventArgs e)
             {
-                _hoverCheckTimer?.Stop();
-                _hoverCheckTimer?.Dispose();
-                _autoRefreshTimer?.Stop();
-                _autoRefreshTimer?.Dispose();
-                _autoHideTimer?.Stop();
-                _autoHideTimer?.Dispose();
-                _mediaCheckTimer?.Stop();
-                _mediaCheckTimer?.Dispose();
-                _cssWatcher?.Dispose();
-
+                SaveSettings();
                 if (_clockForm != null && !_clockForm.IsDisposed)
                 {
                     _clockForm.Close();
-                    _clockForm.Dispose();
                 }
-                if (_mediaWidget != null && !_mediaWidget.IsDisposed)
-                {
-                    _mediaWidget.Close();
-                    _mediaWidget.Dispose();
-                }
-                if (_startMenu != null && !_startMenu.IsDisposed)
-                {
-                    _startMenu.Close();
-                    _startMenu.Dispose();
-                }
-                if (_windowPreview != null && !_windowPreview.IsDisposed)
-                {
-                    _windowPreview.Close();
-                    _windowPreview.Dispose();
-                }
-
-                foreach (var item in _dockItems)
-                {
-                    item.AnimTimer?.Stop();
-                    item.AnimTimer?.Dispose();
-                    item.Owner?.Close();
-                    item.Owner?.Dispose();
-                }
-                _dockItems.Clear();
-
                 if (_trayIcon != null)
                 {
                     _trayIcon.Visible = false;
@@ -5533,7 +7385,7 @@ namespace OpenDock
                 var contentPanel = new Panel
                 {
                     Dock = DockStyle.Fill,
-                    BackColor = menuColor,
+                    BackColor = Color.Transparent,
                     Padding = new Padding(1)
                 };
                 contentPanel.Paint += (s, e) =>
@@ -5659,32 +7511,21 @@ namespace OpenDock
                     isDragging = false;
                 };
 
-                // Initialize with cached apps instantly (0ms UI lag), or defaults if cache empty
-                var cachedApps = GetInstalledAppsSnapshot();
-                if (cachedApps.Count > 0)
-                {
-                    _allApps = cachedApps;
-                }
-                else
-                {
-                    var defaultApps = new List<InstalledApp>();
-                    AddDefaultInstalledApps(defaultApps);
-                    _allApps = defaultApps;
-                }
+                // Initialize with default apps instantly (0ms UI lag)
+                var defaultApps = new List<InstalledApp>();
+                AddDefaultInstalledApps(defaultApps);
+                _allApps = defaultApps;
                 PopulateAppListControls();
 
-                // Load or refresh in background if cache expired
+                // Load full list asynchronously on background thread to keep UI completely responsive
                 System.Threading.Tasks.Task.Run(() =>
                 {
-                    var apps = GetInstalledApps(forceRefresh: false);
+                    var apps = GetInstalledApps(forceRefresh: true);
                     this.BeginInvoke(new Action(() =>
                     {
                         if (this.IsDisposed) return;
-                        if (_allApps != apps)
-                        {
-                            _allApps = apps;
-                            PopulateAppListControls();
-                        }
+                        _allApps = apps;
+                        PopulateAppListControls();
                     }));
                 });
 
@@ -5834,29 +7675,17 @@ namespace OpenDock
                 _flowLayout.SuspendLayout();
                 try
                 {
-                    while (_flowLayout.Controls.Count > 0)
-                    {
-                        var ctrl = _flowLayout.Controls[0];
-                        _flowLayout.Controls.RemoveAt(0);
-                        ctrl.Dispose();
-                    }
-
+                    _flowLayout.Controls.Clear();
                     foreach (var app in _allApps)
                     {
                         Bitmap? iconBmp = null;
                         try
                         {
-                            if (app.AppIcon != null)
-                            {
-                                using var temp = app.AppIcon.ToBitmap();
-                                iconBmp = new Bitmap(temp, 24, 24);
-                            }
+                            iconBmp = new Bitmap(app.AppIcon.ToBitmap(), 24, 24);
                         }
                         catch
                         {
-                            using var genericIcon = Form1.GetGenericApplicationIcon();
-                            using var temp = genericIcon.ToBitmap();
-                            iconBmp = new Bitmap(temp, 24, 24);
+                            iconBmp = new Bitmap(Form1.GetGenericApplicationIcon().ToBitmap(), 24, 24);
                         }
 
                         var row = new AppRowControl(app.Name, app.ExePath, iconBmp);
@@ -5990,18 +7819,32 @@ namespace OpenDock
 
                 var rect = new Rectangle(0, 0, Width - 1, Height - 1);
                 var menuColor = Color.FromArgb(Form1.CurrentSettings.MenuColorArgb);
+                var shadowRect = new Rectangle(2, 3, Math.Max(1, Width - 5), Math.Max(1, Height - 5));
+                using (var shadowPath = RoundedRect(shadowRect, 16))
+                using (var shadowBrush = new SolidBrush(Color.FromArgb(45, 0, 0, 0)))
+                {
+                    g.FillPath(shadowBrush, shadowPath);
+                }
+
                 using (var path = RoundedRect(rect, 16))
-                using (var fillBrush = new SolidBrush(Color.FromArgb(175, menuColor.R, menuColor.G, menuColor.B)))
-                using (var borderPen = new Pen(Color.FromArgb(50, 255, 255, 255), 1.2f))
+                using (var fillBrush = new SolidBrush(Color.FromArgb(105, menuColor.R, menuColor.G, menuColor.B)))
+                using (var borderPen = new Pen(Color.FromArgb(70, 255, 255, 255), 1.1f))
                 using (var glossBrush = new System.Drawing.Drawing2D.LinearGradientBrush(
                     rect,
                     Color.FromArgb(48, 255, 255, 255),
-                    Color.FromArgb(8, 255, 255, 255),
-                    System.Drawing.Drawing2D.LinearGradientMode.Vertical))
+                    Color.FromArgb(4, 255, 255, 255),
+                    132f))
                 {
                     g.FillPath(fillBrush, path);
                     g.FillPath(glossBrush, path);
                     g.DrawPath(borderPen, path);
+                }
+
+                var innerRect = Rectangle.Inflate(rect, -2, -2);
+                using (var innerPath = RoundedRect(innerRect, 14))
+                using (var innerBorder = new Pen(Color.FromArgb(20, 255, 255, 255), 1f))
+                {
+                    g.DrawPath(innerBorder, innerPath);
                 }
             }
 
@@ -6013,10 +7856,16 @@ namespace OpenDock
                 int cornerPref = 2;
                 DwmSetWindowAttribute(this.Handle, 33, ref cornerPref, sizeof(int));
 
+                Color tint = Color.FromArgb(Form1.CurrentSettings.MenuColorArgb);
+                int gradientColor = (52 << 24) |
+                                    (tint.B << 16) |
+                                    (tint.G << 8) |
+                                    tint.R;
                 var accent = new AccentPolicy
                 {
-                    AccentState = AccentState.ACCENT_ENABLE_BLURBEHIND,
-                    GradientColor = 0x55181818
+                    AccentState = AccentState.ACCENT_ENABLE_ACRYLICBLURBEHIND,
+                    AccentFlags = 2,
+                    GradientColor = gradientColor
                 };
                 var accentStructSize = Marshal.SizeOf(accent);
                 var accentPtr = Marshal.AllocHGlobal(accentStructSize);
@@ -6044,9 +7893,7 @@ namespace OpenDock
                     IntPtr hIcon = ExtractIcon(IntPtr.Zero, path, index);
                     if (hIcon != IntPtr.Zero)
                     {
-                        Icon icon = (Icon)Icon.FromHandle(hIcon).Clone();
-                        Form1.DestroyIcon(hIcon);
-                        return icon;
+                        return Icon.FromHandle(hIcon);
                     }
                 }
                 catch { }
@@ -6115,12 +7962,60 @@ namespace OpenDock
                 return "Baglanti Yok";
             }
 
-            public static void WarmInstalledAppsCacheAsync()
+            private static readonly List<System.IO.FileSystemWatcher> _startMenuWatchers = new();
+            private static System.Threading.Timer? _debounceRefreshTimer;
+
+            public static void InitializeStartMenuFolderWatchers()
+            {
+                lock (InstalledAppsCacheLock)
+                {
+                    if (_startMenuWatchers.Count > 0) return;
+
+                    var dirs = new List<string>();
+                    try { dirs.Add(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.CommonApplicationData), @"Microsoft\Windows\Start Menu\Programs")); } catch { }
+                    try { dirs.Add(System.IO.Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData), @"Microsoft\Windows\Start Menu\Programs")); } catch { }
+
+                    foreach (var dir in dirs)
+                    {
+                        if (!System.IO.Directory.Exists(dir)) continue;
+                        try
+                        {
+                            var watcher = new System.IO.FileSystemWatcher(dir)
+                            {
+                                IncludeSubdirectories = true,
+                                NotifyFilter = System.IO.NotifyFilters.FileName | System.IO.NotifyFilters.DirectoryName | System.IO.NotifyFilters.LastWrite,
+                                EnableRaisingEvents = true
+                            };
+
+                            void OnChanged(object s, System.IO.FileSystemEventArgs e)
+                            {
+                                _debounceRefreshTimer?.Dispose();
+                                _debounceRefreshTimer = new System.Threading.Timer(_ =>
+                                {
+                                    lock (InstalledAppsCacheLock)
+                                    {
+                                        _installedAppsCache = null;
+                                    }
+                                    WarmInstalledAppsCacheAsync(force: true);
+                                }, null, 1000, System.Threading.Timeout.Infinite);
+                            }
+
+                            watcher.Created += OnChanged;
+                            watcher.Deleted += OnChanged;
+                            watcher.Renamed += (s, e) => OnChanged(s, e);
+                            _startMenuWatchers.Add(watcher);
+                        }
+                        catch { }
+                    }
+                }
+            }
+
+            public static void WarmInstalledAppsCacheAsync(bool force = false)
             {
                 lock (InstalledAppsCacheLock)
                 {
                     if (_isInstalledAppsCacheWarming ||
-                        (_installedAppsCache != null && DateTime.UtcNow - _installedAppsCacheTime < InstalledAppsCacheDuration))
+                        (!force && _installedAppsCache != null && DateTime.UtcNow - _installedAppsCacheTime < InstalledAppsCacheDuration))
                     {
                         return;
                     }
@@ -6600,6 +8495,7 @@ namespace OpenDock
     background-color: #181818;
     opacity: 175;
     icon-size: 32px;
+    dock-length: 640px;
     position: bottom;
     auto-hide: false;
 }
@@ -6937,76 +8833,74 @@ namespace OpenDock
         {
             private static readonly Guid _iidAudioEndpointVolume = new Guid("5CDF2C82-841E-4546-9722-0CF74078229A");
 
-            private static void ExecuteWithVolume(Action<IAudioEndpointVolume> action)
+            private static IAudioEndpointVolume? GetVolumeControl()
             {
-                IMMDeviceEnumerator? enumerator = null;
-                object? deviceObj = null;
-                object? volumeObj = null;
                 try
                 {
-                    enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
+                    var enumerator = (IMMDeviceEnumerator)new MMDeviceEnumerator();
                     // eRender = 0, eMultimedia = 1
-                    enumerator.GetDefaultAudioEndpoint(0, 1, out deviceObj);
-                    if (deviceObj == null) return;
+                    enumerator.GetDefaultAudioEndpoint(0, 1, out object deviceObj);
+                    if (deviceObj == null) return null;
                     var device = (IMMDevice)deviceObj;
                     var iid = _iidAudioEndpointVolume;
-                    device.Activate(ref iid, 23, IntPtr.Zero, out volumeObj);
-                    if (volumeObj is IAudioEndpointVolume volume)
-                    {
-                        action(volume);
-                    }
+                    device.Activate(ref iid, 23, IntPtr.Zero, out object volumeObj);
+                    return volumeObj as IAudioEndpointVolume;
                 }
-                catch { }
-                finally
+                catch
                 {
-                    if (volumeObj != null) Marshal.ReleaseComObject(volumeObj);
-                    if (deviceObj != null) Marshal.ReleaseComObject(deviceObj);
-                    if (enumerator != null) Marshal.ReleaseComObject(enumerator);
+                    return null;
                 }
             }
 
             public static float GetMasterVolume()
             {
-                float result = 50f;
-                ExecuteWithVolume(volume =>
+                try
                 {
-                    if (volume.GetMasterVolumeLevelScalar(out float level) == 0)
-                    {
-                        result = level * 100f;
-                    }
-                });
-                return result;
+                    var volume = GetVolumeControl();
+                    if (volume == null) return 50f;
+                    volume.GetMasterVolumeLevelScalar(out float level);
+                    return level * 100f;
+                }
+                catch
+                {
+                    return 50f;
+                }
             }
 
             public static void SetMasterVolume(float level)
             {
-                ExecuteWithVolume(volume =>
+                try
                 {
+                    var volume = GetVolumeControl();
+                    if (volume == null) return;
                     var guid = Guid.Empty;
                     volume.SetMasterVolumeLevelScalar(Math.Max(0f, Math.Min(1f, level / 100f)), ref guid);
-                });
+                }
+                catch { }
             }
 
             public static bool GetMute()
             {
-                bool result = false;
-                ExecuteWithVolume(volume =>
+                try
                 {
-                    if (volume.GetMute(out bool mute) == 0)
-                    {
-                        result = mute;
-                    }
-                });
-                return result;
+                    var volume = GetVolumeControl();
+                    if (volume == null) return false;
+                    volume.GetMute(out bool mute);
+                    return mute;
+                }
+                catch { return false; }
             }
 
             public static void SetMute(bool mute)
             {
-                ExecuteWithVolume(volume =>
+                try
                 {
+                    var volume = GetVolumeControl();
+                    if (volume == null) return;
                     var guid = Guid.Empty;
                     volume.SetMute(mute, ref guid);
-                });
+                }
+                catch { }
             }
         }
 
@@ -7051,10 +8945,16 @@ namespace OpenDock
 
             private void EnableBlur()
             {
+                Color tint = Color.FromArgb(Form1.CurrentSettings.MenuColorArgb);
+                int gradientColor = (52 << 24) |
+                                    (tint.B << 16) |
+                                    (tint.G << 8) |
+                                    tint.R;
                 var accent = new AccentPolicy
                 {
                     AccentState = AccentState.ACCENT_ENABLE_ACRYLICBLURBEHIND,
-                    GradientColor = (0 << 24) | (0x151515 & 0xFFFFFF)
+                    AccentFlags = 2,
+                    GradientColor = gradientColor
                 };
                 int accentStructSize = Marshal.SizeOf(accent);
                 IntPtr accentPtr = Marshal.AllocHGlobal(accentStructSize);
@@ -7072,6 +8972,32 @@ namespace OpenDock
 
                 int value = 1;
                 DwmSetWindowAttribute(this.Handle, 20, ref value, sizeof(int));
+            }
+
+            protected override void OnPaintBackground(PaintEventArgs e)
+            {
+                // DWM akrilik yüzeyinin görünmesi için düz arka plan boyanmaz.
+            }
+
+            protected override void OnPaint(PaintEventArgs e)
+            {
+                Graphics graphics = e.Graphics;
+                graphics.Clear(Color.Transparent);
+                graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+                var rect = new Rectangle(0, 0, Width - 1, Height - 1);
+                Color tint = Color.FromArgb(Form1.CurrentSettings.MenuColorArgb);
+
+                using var path = RoundedRect(rect, 16);
+                using var fill = new SolidBrush(Color.FromArgb(105, tint.R, tint.G, tint.B));
+                using var glow = new System.Drawing.Drawing2D.LinearGradientBrush(
+                    rect,
+                    Color.FromArgb(48, 255, 255, 255),
+                    Color.FromArgb(4, 255, 255, 255),
+                    132f);
+                using var border = new Pen(Color.FromArgb(70, 255, 255, 255), 1.1f);
+                graphics.FillPath(fill, path);
+                graphics.FillPath(glow, path);
+                graphics.DrawPath(border, path);
             }
 
             private static System.Drawing.Drawing2D.GraphicsPath RoundedRect(Rectangle bounds, int radius)
@@ -7134,7 +9060,7 @@ namespace OpenDock
                 var contentPanel = new Panel
                 {
                     Dock = DockStyle.Fill,
-                    BackColor = menuColor,
+                    BackColor = Color.Transparent,
                     Padding = new Padding(1)
                 };
                 this.Controls.Add(contentPanel);
@@ -7906,7 +9832,6 @@ namespace OpenDock
             private readonly Form1 _mainForm;
             private readonly List<Bitmap>[] _appIcons;
             private Bitmap? _renderTarget;
-            private Bitmap? _blurTarget;
             private Bitmap? _customBgImage;
 
             private float _angle = 0f;
@@ -8319,26 +10244,18 @@ namespace OpenDock
                 // Render motion blur frames from history
                 if (Form1.CurrentSettings.TransitionMotionBlurEnabled && _angleHistory.Count > 1)
                 {
-                    if (_blurTarget == null || _blurTarget.Width != _renderTarget.Width || _blurTarget.Height != _renderTarget.Height)
-                    {
-                        _blurTarget?.Dispose();
-                        _blurTarget = new Bitmap(_renderTarget.Width, _renderTarget.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
-                    }
-
                     int i = 0;
-                    var cm = new System.Drawing.Imaging.ColorMatrix();
-                    using var ia = new System.Drawing.Imaging.ImageAttributes();
-
                     foreach (float prevAngle in _angleHistory)
                     {
                         float alpha = 0.08f + 0.08f * (i / (float)_angleHistory.Count);
-
-                        using (var tempG = Graphics.FromImage(_blurTarget))
+                        
+                        using (var tempBmp = new Bitmap(_renderTarget.Width, _renderTarget.Height, System.Drawing.Imaging.PixelFormat.Format32bppPArgb))
+                        using (var tempG = Graphics.FromImage(tempBmp))
                         {
                             tempG.Clear(Color.Transparent);
                             tempG.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBilinear;
                             tempG.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-
+                            
                             var tempSlices = new List<SliceInfo>(120);
                             for (int k = 0; k < _totalCount; k++)
                             {
@@ -8356,12 +10273,14 @@ namespace OpenDock
                             {
                                 tempG.DrawImage(slice.Bmp, slice.DestRect, slice.SrcRect, GraphicsUnit.Pixel);
                             }
+                            
+                            var cm = new System.Drawing.Imaging.ColorMatrix { Matrix33 = alpha };
+                            using (var ia = new System.Drawing.Imaging.ImageAttributes())
+                            {
+                                ia.SetColorMatrix(cm);
+                                g.DrawImage(tempBmp, new Rectangle((int)cubeX, (int)cubeY, (int)cubeW, (int)cubeH), 0, 0, tempBmp.Width, tempBmp.Height, GraphicsUnit.Pixel, ia);
+                            }
                         }
-
-                        cm.Matrix33 = alpha;
-                        ia.SetColorMatrix(cm);
-                        g.DrawImage(_blurTarget, new Rectangle((int)cubeX, (int)cubeY, (int)cubeW, (int)cubeH), 0, 0, _blurTarget.Width, _blurTarget.Height, GraphicsUnit.Pixel, ia);
-
                         i++;
                     }
                 }
@@ -8553,7 +10472,6 @@ namespace OpenDock
                         }
                     }
                     _renderTarget?.Dispose();
-                    _blurTarget?.Dispose();
                     _customBgImage?.Dispose();
                     _animTimer?.Dispose();
                 }
@@ -8567,6 +10485,67 @@ namespace OpenDock
     public partial class Form1
     {
         private System.IO.FileSystemWatcher? _cssWatcher;
+        private System.IO.FileSystemWatcher? _settingsWatcher;
+
+        private void InitializeSettingsWatcher()
+        {
+            try
+            {
+                EnsureSettingsStorage();
+                if (System.IO.Directory.Exists(SettingsDirectory))
+                {
+                    _settingsWatcher = new System.IO.FileSystemWatcher(SettingsDirectory)
+                    {
+                        NotifyFilter = System.IO.NotifyFilters.LastWrite | System.IO.NotifyFilters.FileName | System.IO.NotifyFilters.Size
+                    };
+
+                    void OnFileChanged(string fullPath)
+                    {
+                        if (this.IsDisposed) return;
+                        this.BeginInvoke(new Action(async () =>
+                        {
+                            await Task.Delay(120);
+                            if (this.IsDisposed) return;
+                            string name = System.IO.Path.GetFileName(fullPath).ToLowerInvariant();
+                            if (name.Contains("settings"))
+                            {
+                                LoadSettings();
+                                UpdateDockPositionAndSize();
+                                ApplyDockAppearance();
+                                UpdateClockVisibility();
+                                if (CurrentSettings.AutoHideEnabled)
+                                {
+                                    if (_autoHideTimer != null && !_autoHideTimer.Enabled) _autoHideTimer.Start();
+                                }
+                                else
+                                {
+                                    _autoHideTimer?.Stop();
+                                    _autoHideActive = false;
+                                    _autoHideProgress = 0f;
+                                    this.Location = _dockVisibleLocation;
+                                    this.Bounds = _baseDockBounds;
+                                }
+                                RefreshDockIcons();
+                            }
+                            else if (name.Contains("pins"))
+                            {
+                                LoadPinnedApps();
+                                RefreshDockIcons();
+                            }
+
+
+
+                        }));
+                    }
+
+                    _settingsWatcher.Changed += (s, e) => OnFileChanged(e.FullPath);
+                    _settingsWatcher.Created += (s, e) => OnFileChanged(e.FullPath);
+                    _settingsWatcher.Renamed += (s, e) => OnFileChanged(e.FullPath);
+                    _settingsWatcher.EnableRaisingEvents = true;
+                }
+            }
+            catch { }
+        }
 
         private void InitializeCssWatcher()
         {
@@ -8586,7 +10565,7 @@ namespace OpenDock
                         await Task.Delay(100);
                         if (!this.IsDisposed)
                         {
-                            ApplyCssStyles();
+                            ApplyCssStyles(importDockSettings: true);
                         }
                     }));
                 };
@@ -8596,7 +10575,7 @@ namespace OpenDock
             catch { }
         }
 
-        private void ApplyCssStyles()
+        private void ApplyCssStyles(bool importDockSettings = false)
         {
             string cssPath = System.IO.Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "opendock.css");
             if (!System.IO.File.Exists(cssPath))
@@ -8618,6 +10597,7 @@ namespace OpenDock
     background-color: #181818;
     opacity: 175;
     icon-size: 32px;
+    dock-length: 640px;
     position: bottom;
     auto-hide: false;
 }
@@ -8632,7 +10612,8 @@ namespace OpenDock
 
             try
             {
-                if (System.IO.File.Exists(cssPath))
+                if (System.IO.File.Exists(cssPath) &&
+                    (importDockSettings || !System.IO.File.Exists(SettingsFilePath)))
                 {
                     string content = System.IO.File.ReadAllText(cssPath);
                     
@@ -8673,6 +10654,12 @@ namespace OpenDock
                                         sz = Math.Max(16, Math.Min(128, sz));
                                         CurrentSettings.DockIconSize = sz;
                                     }
+                                }
+                                else if (name == "dock-length")
+                                {
+                                    string cleanVal = System.Text.RegularExpressions.Regex.Replace(val, @"[a-zA-Z]", "").Trim();
+                                    if (int.TryParse(cleanVal, out int length))
+                                        CurrentSettings.DockLength = Math.Clamp(length, 320, 3840);
                                 }
                                 else if (name == "position")
                                 {
@@ -8723,8 +10710,12 @@ namespace OpenDock
 
             // Apply settings to Dock
             this.BackColor = Color.Black; // Must remain solid black as it acts as the transparency key
-            UpdateDockPositionAndSize();
-            SaveSettings();
+            if (importDockSettings)
+                SaveSettings();
+            if (_dockItems.Count > 0)
+                RefreshDockIcons();
+            else
+                UpdateDockPositionAndSize();
 
             // Refresh clock if active
             if (_clockForm != null && !_clockForm.IsDisposed)
@@ -8753,10 +10744,7 @@ namespace OpenDock
                 this.BackColor = Color.FromArgb(20, 20, 22);
 
                 // Re-use rounded corners for AboutForm region
-                using (var regionPath = RoundedRect(new Rectangle(0, 0, this.Width, this.Height), 12))
-                {
-                    this.Region = new Region(regionPath);
-                }
+                this.Region = new Region(RoundedRect(new Rectangle(0, 0, this.Width, this.Height), 12));
 
                 // Add close button
                 var closeBtn = new Button
@@ -8853,10 +10841,10 @@ namespace OpenDock
 
                 var rect = new Rectangle(0, 0, this.Width - 1, this.Height - 1);
                 var glassColor = Color.FromArgb(74, 24, 24, 26);
+                var borderPen = new Pen(Color.FromArgb(82, 255, 255, 255), 1f);
 
                 using (var path = RoundedRect(rect, 12))
                 using (var fillBrush = new SolidBrush(glassColor))
-                using (var borderPen = new Pen(Color.FromArgb(82, 255, 255, 255), 1f))
                 {
                     g.FillPath(fillBrush, path);
                     g.DrawPath(borderPen, path);

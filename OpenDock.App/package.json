@@ -1,0 +1,20 @@
+{
+  "name": "opendock-settings-app",
+  "version": "1.0.0",
+  "description": "OpenDock Configuration & Control Center",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "keywords": [
+    "opendock",
+    "settings",
+    "dock",
+    "windows"
+  ],
+  "author": "OpenDock Contributors",
+  "license": "MIT",
+  "devDependencies": {
+    "electron": "^34.2.0"
+  }
+}

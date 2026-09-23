@@ -1,0 +1,576 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OpenDock Settings</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <!-- Windows 11 Fluent Frameless Titlebar -->
+  <header id="titlebar">
+    <div class="titlebar-left">
+      <div class="app-logo">
+        <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <rect x="2" y="16" width="20" height="4" rx="2"></rect>
+          <path d="M6 16v-6a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v6"></path>
+          <path d="M12 8V4"></path>
+          <circle cx="12" cy="4" r="1.5"></circle>
+        </svg>
+      </div>
+      <span class="app-title">OpenDock</span>
+      <span class="app-subtitle">Settings</span>
+    </div>
+
+    <div class="titlebar-center">
+      <div id="dock-status-pill" class="status-pill status-stopped">
+        <span class="status-dot"></span>
+        <span id="dock-status-text">Dock Stopped</span>
+      </div>
+      <button id="btn-quick-toggle" class="btn-titlebar-action" title="Launch or restart OpenDock">
+        <svg viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <polygon points="5 3 19 12 5 21 5 3"></polygon>
+        </svg>
+        <span id="btn-quick-toggle-text">Start</span>
+      </button>
+    </div>
+
+    <div class="titlebar-right">
+      <button id="btn-minimize" class="caption-btn" title="Minimize" aria-label="Minimize">
+        <svg viewBox="0 0 10 1" width="10" height="1">
+          <line x1="0" y1="0.5" x2="10" y2="0.5" stroke="currentColor" stroke-width="1"></line>
+        </svg>
+      </button>
+      <button id="btn-maximize" class="caption-btn" title="Maximize" aria-label="Maximize">
+        <svg id="icon-maximize" viewBox="0 0 10 10" width="10" height="10">
+          <rect x="0.5" y="0.5" width="9" height="9" fill="none" stroke="currentColor" stroke-width="1"></rect>
+        </svg>
+        <svg id="icon-restore" class="hidden" viewBox="0 0 10 10" width="10" height="10">
+          <rect x="2.5" y="0.5" width="7" height="7" fill="none" stroke="currentColor" stroke-width="1"></rect>
+          <polyline points="0.5,2.5 0.5,9.5 7.5,9.5" fill="none" stroke="currentColor" stroke-width="1"></polyline>
+        </svg>
+      </button>
+      <button id="btn-close" class="caption-btn caption-close" title="Close" aria-label="Close">
+        <svg viewBox="0 0 10 10" width="10" height="10">
+          <line x1="0" y1="0" x2="10" y2="10" stroke="currentColor" stroke-width="1.2"></line>
+          <line x1="10" y1="0" x2="0" y2="10" stroke="currentColor" stroke-width="1.2"></line>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <!-- App Layout -->
+  <div id="app-container">
+    <!-- Sidebar -->
+    <aside id="sidebar">
+      <nav class="sidebar-nav">
+        <button class="nav-item active" data-tab="general">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="4" y1="21" x2="4" y2="14"></line>
+            <line x1="4" y1="10" x2="4" y2="3"></line>
+            <line x1="12" y1="21" x2="12" y2="12"></line>
+            <line x1="12" y1="8" x2="12" y2="3"></line>
+            <line x1="20" y1="21" x2="20" y2="16"></line>
+            <line x1="20" y1="12" x2="20" y2="3"></line>
+            <line x1="1" y1="14" x2="7" y2="14"></line>
+            <line x1="9" y1="8" x2="15" y2="8"></line>
+            <line x1="17" y1="16" x2="23" y2="16"></line>
+          </svg>
+          <span>General</span>
+        </button>
+
+        <button class="nav-item" data-tab="appearance">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <circle cx="12" cy="12" r="10"></circle>
+            <path d="M12 2a10 10 0 0 0 0 20v-20z"></path>
+          </svg>
+          <span>Appearance</span>
+        </button>
+
+        <button class="nav-item" data-tab="dimensions">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polyline points="4 14 10 14 10 20"></polyline>
+            <polyline points="20 10 14 10 14 4"></polyline>
+            <line x1="14" y1="10" x2="21" y2="3"></line>
+            <line x1="3" y1="21" x2="10" y2="14"></line>
+          </svg>
+          <span>Size & Magnification</span>
+        </button>
+
+        <button class="nav-item" data-tab="pins">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="12" y1="17" x2="12" y2="22"></line>
+            <path d="M5 17h14v-1.76a2 2 0 0 0-1.11-1.79l-1.78-.89A2 2 0 0 1 15 10.77V6a3 3 0 0 0-6 0v4.77a2 2 0 0 1-1.11 1.79l-1.78.89A2 2 0 0 0 5 15.24Z"></path>
+          </svg>
+          <span>Pinned Applications</span>
+        </button>
+
+        <button class="nav-item" data-tab="transitions">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+          </svg>
+          <span>Transitions</span>
+        </button>
+
+        <button class="nav-item" data-tab="system">
+          <svg viewBox="0 0 24 24" width="16" height="16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect x="2" y="3" width="20" height="14" rx="2"></rect>
+            <line x1="8" y1="21" x2="16" y2="21"></line>
+            <line x1="12" y1="17" x2="12" y2="21"></line>
+          </svg>
+          <span>System & Storage</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <span class="live-sync-indicator">
+          <span class="sync-dot"></span> Live Sync Active
+        </span>
+      </div>
+    </aside>
+
+    <!-- Main Content Panel -->
+    <main id="content">
+      <!-- General Tab -->
+      <section id="tab-general" class="tab-pane active">
+        <div class="pane-title">
+          <h2>General Settings</h2>
+          <p>Display placement, auto-hide behaviors, and integrated desktop widgets.</p>
+        </div>
+
+        <div class="section-card">
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">Dock Position</label>
+              <span class="setting-desc">Edge of the primary monitor where OpenDock attaches.</span>
+            </div>
+            <div class="segmented-control" id="position-segmented">
+              <button type="button" class="segment-btn active" data-pos="Bottom">Bottom</button>
+              <button type="button" class="segment-btn" data-pos="Top">Top</button>
+              <button type="button" class="segment-btn" data-pos="Left">Left</button>
+              <button type="button" class="segment-btn" data-pos="Right">Right</button>
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="setting-auto-hide">Auto-Hide Dock</label>
+              <span class="setting-desc">Automatically retract the dock off-screen until cursor moves to the edge.</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="setting-auto-hide">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="setting-separate-apps">Separate Running Apps</label>
+              <span class="setting-desc">Display a divider between pinned shortcuts and unpinned running software.</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="setting-separate-apps">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="setting-show-clock">Digital Clock</label>
+              <span class="setting-desc">Show digital clock and calendar widget attached to the dock edge.</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="setting-show-clock">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="setting-recycle-bin">Recycle Bin</label>
+              <span class="setting-desc">Show the system Recycle Bin shortcut with dynamic full/empty state.</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="setting-recycle-bin">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="setting-media-controller">Media Controller</label>
+              <span class="setting-desc">Show music playback title, artist, and playback control buttons.</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="setting-media-controller">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="setting-game-mode">Game Mode</label>
+              <span class="setting-desc">Automatically hide dock when a full-screen video or game window is active.</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="setting-game-mode">
+              <span class="slider"></span>
+            </label>
+          </div>
+        </div>
+      </section>
+
+      <!-- Appearance Tab -->
+      <section id="tab-appearance" class="tab-pane">
+        <div class="pane-title">
+          <h2>Appearance & Glass</h2>
+          <p>Acrylic frosted glass tints, opacity levels, and custom start menu icon.</p>
+        </div>
+
+        <div class="section-card">
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">Dock Tint Color</label>
+              <span class="setting-desc">Base frosted acrylic background tint for the dock bar.</span>
+            </div>
+            <div class="color-picker-control">
+              <input type="color" id="input-dock-color-picker" value="#181818">
+              <input type="text" id="input-dock-color-hex" value="#181818" maxlength="7" spellcheck="false" class="hex-input">
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="input-dock-alpha">Dock Opacity / Alpha</label>
+              <span class="setting-desc">Glass opacity level (0 = fully transparent, 255 = completely solid).</span>
+            </div>
+            <div class="range-with-number">
+              <input type="range" id="input-dock-alpha" min="0" max="255" step="1" value="175">
+              <div class="number-box">
+                <input type="number" id="input-num-dock-alpha" min="0" max="255" value="175">
+              </div>
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">Menu Tint Color</label>
+              <span class="setting-desc">Background color for the start menu and context flyouts.</span>
+            </div>
+            <div class="color-picker-control">
+              <input type="color" id="input-menu-color-picker" value="#181818">
+              <input type="text" id="input-menu-color-hex" value="#181818" maxlength="7" spellcheck="false" class="hex-input">
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">Search Box Color</label>
+              <span class="setting-desc">Background tint for the integrated application search bar.</span>
+            </div>
+            <div class="color-picker-control">
+              <input type="color" id="input-search-color-picker" value="#2d2d2d">
+              <input type="text" id="input-search-color-hex" value="#2D2D2D" maxlength="7" spellcheck="false" class="hex-input">
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">Start Menu Icon</label>
+              <span class="setting-desc">Custom image for the dock start button (leave empty for default Windows logo).</span>
+            </div>
+            <div class="file-picker-control">
+              <div id="logo-preview" class="file-preview-box"></div>
+              <input type="text" id="input-logo-path" readonly placeholder="Default Windows Logo" class="file-path-input">
+              <button type="button" id="btn-browse-logo" class="btn btn-secondary">Browse...</button>
+              <button type="button" id="btn-reset-logo" class="btn btn-outline" title="Reset to default icon">Reset</button>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Dimensions & Magnification Tab -->
+      <section id="tab-dimensions" class="tab-pane">
+        <div class="pane-title">
+          <h2>Size & Magnification</h2>
+          <p>Dock geometry, icon scaling, and cursor magnification dynamics.</p>
+        </div>
+
+        <div class="section-card">
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="input-dock-length">Dock Bar Length</label>
+              <span class="setting-desc">Total span of the dock along the screen edge (320px to 3840px).</span>
+            </div>
+            <div class="range-with-number">
+              <input type="range" id="input-dock-length" min="320" max="3840" step="10" value="640">
+              <div class="number-box">
+                <input type="number" id="input-num-dock-length" min="320" max="3840" step="10" value="640">
+                <span class="unit">px</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="input-icon-size">Base Icon Size</label>
+              <span class="setting-desc">Standard unmagnified width and height for dock icons (16px to 96px).</span>
+            </div>
+            <div class="range-with-number">
+              <input type="range" id="input-icon-size" min="16" max="96" step="2" value="32">
+              <div class="number-box">
+                <input type="number" id="input-num-icon-size" min="16" max="96" step="2" value="32">
+                <span class="unit">px</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="setting-magnification-enabled">Enable Magnification</label>
+              <span class="setting-desc">Smoothly zoom and lift icons when the cursor hovers across the dock.</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="setting-magnification-enabled">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="input-magnified-size">Maximum Magnified Size</label>
+              <span class="setting-desc">Peak icon size reached when cursor is directly over the icon center.</span>
+            </div>
+            <div class="range-with-number">
+              <input type="range" id="input-magnified-size" min="24" max="128" step="2" value="64">
+              <div class="number-box">
+                <input type="number" id="input-num-magnified-size" min="24" max="128" step="2" value="64">
+                <span class="unit">px</span>
+              </div>
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="input-magnification-range">Magnification Range</label>
+              <span class="setting-desc">Number of adjacent neighboring icons smoothly zoomed by the bell curve.</span>
+            </div>
+            <div class="range-with-number">
+              <input type="range" id="input-magnification-range" min="1" max="5" step="1" value="3">
+              <div class="number-box">
+                <input type="number" id="input-num-magnification-range" min="1" max="5" step="1" value="3">
+                <span class="unit">icons</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Pinned Applications Tab -->
+      <section id="tab-pins" class="tab-pane">
+        <div class="pane-title flex-between">
+          <div>
+            <h2>Pinned Applications</h2>
+            <p>Persistent application shortcuts anchored on the dock.</p>
+          </div>
+          <button type="button" id="btn-add-pin" class="btn btn-primary">
+            <svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round">
+              <line x1="12" y1="5" x2="12" y2="19"></line>
+              <line x1="5" y1="12" x2="19" y2="12"></line>
+            </svg>
+            Add Application...
+          </button>
+        </div>
+
+        <div class="section-card">
+          <div id="pins-list-container" class="pins-list">
+            <div class="empty-state">Loading pinned applications...</div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Transitions Tab -->
+      <section id="tab-transitions" class="tab-pane">
+        <div class="pane-title">
+          <h2>Transitions & Physics</h2>
+          <p>Window minimize animation dynamics, deceleration curves, and motion blur.</p>
+        </div>
+
+        <div class="section-card">
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">Window Minimize Effect</label>
+              <span class="setting-desc">Animation style when minimizing windows into the dock (Genie or Scale).</span>
+            </div>
+            <div class="segmented-control" id="minimize-effect-segmented">
+              <button type="button" class="segment-btn active" data-effect="Genie">Genie Effect</button>
+              <button type="button" class="segment-btn" data-effect="Scale">Scale Effect</button>
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="setting-motion-blur">Motion Blur Effect</label>
+              <span class="setting-desc">High-speed motion blur during window minimize and restore transitions.</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="setting-motion-blur">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="setting-show-stars">Window Collapse Star Field</label>
+              <span class="setting-desc">Draw energetic spatial star particles streaming along the window collapse vortex.</span>
+            </div>
+            <label class="switch">
+              <input type="checkbox" id="setting-show-stars">
+              <span class="slider"></span>
+            </label>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="input-stars-count">Star Particle Count</label>
+              <span class="setting-desc">Density of stars rendered during minimize animations.</span>
+            </div>
+            <div class="range-with-number">
+              <input type="range" id="input-stars-count" min="5" max="100" step="5" value="20">
+              <div class="number-box">
+                <input type="number" id="input-num-stars-count" min="5" max="100" step="5" value="20">
+              </div>
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="input-deceleration">Animation Deceleration</label>
+              <span class="setting-desc">Deceleration factor for window glide (higher = snappier, lower = floatier).</span>
+            </div>
+            <div class="range-with-number">
+              <input type="range" id="input-deceleration" min="0.05" max="0.50" step="0.01" value="0.15">
+              <div class="number-box">
+                <input type="number" id="input-num-deceleration" min="0.05" max="0.50" step="0.01" value="0.15">
+              </div>
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label" for="input-switch-delay">Switch Delay</label>
+              <span class="setting-desc">Delay before transitioning window captures during multi-tasking.</span>
+            </div>
+            <div class="range-with-number">
+              <input type="range" id="input-switch-delay" min="0" max="400" step="10" value="100">
+              <div class="number-box">
+                <input type="number" id="input-num-switch-delay" min="0" max="400" step="10" value="100">
+                <span class="unit">ms</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- System & Storage Tab -->
+      <section id="tab-system" class="tab-pane">
+        <div class="pane-title">
+          <h2>System & Storage</h2>
+          <p>Process supervisor, data folder access, and configuration backup.</p>
+        </div>
+
+        <div class="section-card">
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">OpenDock Process Status</label>
+              <span class="setting-desc" id="sys-exe-path">Locating OpenDock.exe...</span>
+            </div>
+            <div class="action-buttons-row">
+              <span id="sys-status-badge" class="badge badge-neutral">Checking...</span>
+              <button type="button" id="btn-start-dock" class="btn btn-secondary">Launch</button>
+              <button type="button" id="btn-restart-dock" class="btn btn-secondary">Restart</button>
+              <button type="button" id="btn-stop-dock" class="btn btn-outline-danger">Terminate</button>
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">Settings Directory</label>
+              <span class="setting-desc">Open the %LOCALAPPDATA%\OpenDock folder in Windows File Explorer.</span>
+            </div>
+            <button type="button" id="btn-open-folder" class="btn btn-secondary">Open Folder</button>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">Backup & Restore</label>
+              <span class="setting-desc">Export current settings to a JSON file or import a previous backup.</span>
+            </div>
+            <div class="action-buttons-row">
+              <button type="button" id="btn-export-settings" class="btn btn-secondary">Export JSON...</button>
+              <button type="button" id="btn-import-settings" class="btn btn-secondary">Import JSON...</button>
+            </div>
+          </div>
+
+          <div class="setting-divider"></div>
+
+          <div class="setting-row">
+            <div class="setting-info">
+              <label class="setting-label">Restore Factory Defaults</label>
+              <span class="setting-desc">Reset all colors, dimensions, and behaviors to original defaults.</span>
+            </div>
+            <button type="button" id="btn-reset-defaults" class="btn btn-danger">Reset to Defaults</button>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <!-- Toast Notification Container -->
+  <div id="toast-container"></div>
+
+  <script src="app.js"></script>
+</body>
+</html>
