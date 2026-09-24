@@ -46,9 +46,6 @@ namespace OpenDock
                 {"title_opacity", "Dock Opacity Settings"}, {"prompt_opacity", "Enter opacity value (0 - 255):"},
                 {"title_size", "Icon Size Settings"}, {"prompt_size", "Enter icon pixel size (16 - 128):"},
                 {"minimize_effect", "Minimize Effect"}, {"genie_effect", "Genie Effect"}, {"scale_effect", "Scale Effect"},
-                {"installer_title", "OpenDock"}, {"installer_drag_instruction", "To install OpenDock, drag the icon to Applications"},
-                {"installer_applications", "Applications"}, {"installer_installing", "Installing OpenDock..."},
-                {"installer_completed", "Installation complete! Launching..."}, {"installer_error", "Installation error: "},
                 {"about", "About OpenDock"},
                 {"about_msg", "A professional desktop enhancement utility featuring interactive virtual desktop cube transitions, a persistent media controller, and seamless recycle bin integration.\n\n© 2026 OpenDock. Licensed under the MIT License."},
                 {"dialog_close", "Close"}
@@ -87,9 +84,6 @@ namespace OpenDock
                 {"title_opacity", "Dock Opaklık Ayarı"}, {"prompt_opacity", "Opaklık değerini girin (0 - 255):"},
                 {"title_size", "İkon Boyutu Ayarı"}, {"prompt_size", "İkon piksel boyutunu girin (16 - 128):"},
                 {"minimize_effect", "Küçültme Efekti"}, {"genie_effect", "Cin Efekti (Genie)"}, {"scale_effect", "Ölçekleme Efekti (Scale)"},
-                {"installer_title", "OpenDock"}, {"installer_drag_instruction", "OpenDock'u yüklemek için simgeyi Uygulamalar klasörüne sürükleyin"},
-                {"installer_applications", "Uygulamalar"}, {"installer_installing", "OpenDock sisteme yükleniyor..."},
-                {"installer_completed", "Kurulum başarıyla tamamlandı! Başlatılıyor..."}, {"installer_error", "Kurulum hatası: "},
                 {"about", "OpenDock Hakkında"},
                 {"about_msg", "İnteraktif masaüstü küp geçişleri, medya denetleyicisi ve geri dönüşüm kutusu entegrasyonuna sahip profesyonel masaüstü dock aracı.\n\n© 2026 OpenDock. MIT Lisansı ile lisanslanmıştır."},
                 {"dialog_close", "Kapat"}

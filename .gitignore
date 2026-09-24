@@ -364,3 +364,6 @@ FodyWeavers.xsd
 
 # VS Code settings
 .vscode/
+
+# Release archives
+*.zip

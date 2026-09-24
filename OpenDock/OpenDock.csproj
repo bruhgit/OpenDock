@@ -12,16 +12,15 @@
     <PackageIcon>icon.png</PackageIcon>
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <Copyright>Copyright (C) 2026 omerdev</Copyright>
-    <Version>6.0.0</Version>
-    <AssemblyVersion>6.0.0</AssemblyVersion>
-    <FileVersion>6.0.0</FileVersion>
+    <Version>6.0.1</Version>
+    <AssemblyVersion>6.0.1</AssemblyVersion>
+    <FileVersion>6.0.1</FileVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 
   <ItemGroup>
     <Content Include="icon.ico" />
   </ItemGroup>
-
 
   <ItemGroup>
     <None Include="folder.png">
@@ -33,10 +32,5 @@
     <EmbeddedResource Include="folder.png" />
     <EmbeddedResource Include="icon.png" />
   </ItemGroup>
-
-  <Target Name="CreateInstallerAlias" AfterTargets="Build">
-    <Copy SourceFiles="$(TargetDir)$(TargetName).exe" DestinationFiles="$(TargetDir)Installer.exe" SkipUnchangedFiles="true" />
-    <Copy SourceFiles="$(TargetDir)$(TargetName).runtimeconfig.json" DestinationFiles="$(TargetDir)Installer.runtimeconfig.json" SkipUnchangedFiles="true" Condition="Exists('$(TargetDir)$(TargetName).runtimeconfig.json')" />
-  </Target>
 
 </Project>

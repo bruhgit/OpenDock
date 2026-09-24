@@ -1739,8 +1739,7 @@ namespace OpenDock
             InitializeMinimizeAnimationHook();
             StartMenuForm.InitializeStartMenuFolderWatchers();
             StartMenuForm.WarmInstalledAppsCacheAsync();
-            InstallerWatcher.Start();
-            this.FormClosed += (s, e) => { DisposeMinimizeAnimationHook(); InstallerWatcher.Stop(); };
+            this.FormClosed += (s, e) => DisposeMinimizeAnimationHook();
             this.ResumeLayout();
         }
 
@@ -5310,7 +5309,7 @@ namespace OpenDock
             var aboutItem = new ToolStripMenuItem(Loc.Get("about"));
             aboutItem.Click += (s, e) =>
             {
-                var aboutForm = new AboutForm($"OpenDock v6.0.0", Loc.Get("about_msg"), Loc.Get("dialog_close"));
+                var aboutForm = new AboutForm($"OpenDock v6.0.1", Loc.Get("about_msg"), Loc.Get("dialog_close"));
                 aboutForm.ShowDialog(this);
             };
             contextMenu.Items.Add(aboutItem);
