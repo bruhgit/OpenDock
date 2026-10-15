@@ -1086,6 +1086,7 @@ namespace OpenDock
         private class DockItemData
         {
             public IntPtr WindowHandle { get; set; }
+            public Point DockOffset { get; set; } // Dock içindeki göreli konumu (X, Y)
             public Point OriginalLocation { get; set; } // Ekran koordinatı
             public Size OriginalSize { get; set; }
             public string AppKey { get; set; } = "";
@@ -1184,6 +1185,7 @@ namespace OpenDock
         private const float BounceSpring = -0.7f;
         private ContextMenuStrip _dockBgContextMenu = null!;
         private ContextMenuStrip? _activeContextMenu = null;
+        private readonly AppBarManager _appBarManager = new();
         private bool _autoHideActive = false;
         private float _autoHideProgress = 0f;
         private System.Windows.Forms.Timer _autoHideTimer = null!;
@@ -1327,8 +1329,11 @@ namespace OpenDock
             // Load custom application icon (icon.ico) from executing assembly or base directory
             try
             {
-                string exePath = System.Reflection.Assembly.GetExecutingAssembly().Location;
-                this.Icon = Icon.ExtractAssociatedIcon(exePath);
+                string exePath = Environment.ProcessPath ?? "";
+                if (!string.IsNullOrEmpty(exePath) && System.IO.File.Exists(exePath))
+                {
+                    this.Icon = Icon.ExtractAssociatedIcon(exePath);
+                }
             }
             catch
             {
@@ -1364,43 +1369,57 @@ namespace OpenDock
         private void UpdateDockPositionAndSize()
         {
             if (Screen.PrimaryScreen == null) return;
+            Screen screen = Screen.PrimaryScreen;
 
             // Reset auto-hide progress and state so the visible position anchor can be correctly updated
             _autoHideProgress = 0f;
             _autoHideActive = false;
 
-            Rectangle workspace = Screen.PrimaryScreen.WorkingArea;
-            int horizontalLength = Math.Clamp(CurrentSettings.DockLength, 320, Math.Max(320, workspace.Width - 20));
-            int verticalLength = Math.Clamp(CurrentSettings.DockLength, 320, Math.Max(320, workspace.Height - 20));
+            string pos = CurrentSettings.DockPosition ?? "Bottom";
             int thickness = Math.Max(50, CurrentSettings.DockIconSize + 14);
 
-            string pos = CurrentSettings.DockPosition ?? "Bottom";
+            bool shouldReserve = !CurrentSettings.AutoHideEnabled;
+
+            if (shouldReserve)
+            {
+                int reservedThickness = thickness + 14;
+                _appBarManager.UpdateReservation(pos, reservedThickness, screen);
+            }
+            else
+            {
+                _appBarManager.Unregister();
+            }
+
+            Rectangle baseArea = _appBarManager.GetBaseWorkArea(screen);
+            int horizontalLength = Math.Clamp(CurrentSettings.DockLength, 320, Math.Max(320, baseArea.Width - 20));
+            int verticalLength = Math.Clamp(CurrentSettings.DockLength, 320, Math.Max(320, baseArea.Height - 20));
+
             if (pos.Equals("Left", StringComparison.OrdinalIgnoreCase))
             {
                 this.Size = new Size(thickness, verticalLength);
-                int x = workspace.Left + 10;
-                int y = (workspace.Height - this.Height) / 2 + workspace.Top;
+                int x = baseArea.Left + 10;
+                int y = (baseArea.Height - this.Height) / 2 + baseArea.Top;
                 this.Location = new Point(x, y);
             }
             else if (pos.Equals("Right", StringComparison.OrdinalIgnoreCase))
             {
                 this.Size = new Size(thickness, verticalLength);
-                int x = workspace.Right - this.Width - 10;
-                int y = (workspace.Height - this.Height) / 2 + workspace.Top;
+                int x = baseArea.Right - this.Width - 10;
+                int y = (baseArea.Height - this.Height) / 2 + baseArea.Top;
                 this.Location = new Point(x, y);
             }
             else if (pos.Equals("Top", StringComparison.OrdinalIgnoreCase))
             {
                 this.Size = new Size(horizontalLength, thickness);
-                int x = (workspace.Width - this.Width) / 2 + workspace.Left;
-                int y = workspace.Top + 10;
+                int x = (baseArea.Width - this.Width) / 2 + baseArea.Left;
+                int y = baseArea.Top + 10;
                 this.Location = new Point(x, y);
             }
             else // Bottom
             {
                 this.Size = new Size(horizontalLength, thickness);
-                int x = (workspace.Width - this.Width) / 2 + workspace.Left;
-                int y = workspace.Bottom - this.Height - 10;
+                int x = (baseArea.Width - this.Width) / 2 + baseArea.Left;
+                int y = baseArea.Bottom - this.Height - 10;
                 this.Location = new Point(x, y);
             }
 
@@ -1410,6 +1429,12 @@ namespace OpenDock
             UpdateAutoHidePositions();
             EnableBlur();
             this.Invalidate();
+
+            // Synchronize all existing icon positions immediately with the dock
+            foreach (var item in _dockItems)
+            {
+                UpdateSingleIconPosition(item);
+            }
         }
 
         private void ChangeDockPosition(string position)
@@ -1422,11 +1447,11 @@ namespace OpenDock
 
         private void ApplyDockLength(int requestedLength)
         {
-            Rectangle workspace = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
+            Rectangle bounds = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
             string pos = CurrentSettings.DockPosition ?? "Bottom";
             bool isVertical = pos.Equals("Left", StringComparison.OrdinalIgnoreCase) ||
                               pos.Equals("Right", StringComparison.OrdinalIgnoreCase);
-            int maximum = Math.Max(320, (isVertical ? workspace.Height : workspace.Width) - 20);
+            int maximum = Math.Max(320, (isVertical ? bounds.Height : bounds.Width) - 20);
             CurrentSettings.DockLength = Math.Clamp(requestedLength, 320, maximum);
             SaveSettings();
             UpdateDockPositionAndSize();
@@ -1646,6 +1671,9 @@ namespace OpenDock
         private void Form1_Load(object sender, EventArgs e)
         {
             this.SuspendLayout();
+            _appBarManager.Register(this.Handle);
+            Application.ApplicationExit += (s, ev) => _appBarManager.Unregister();
+            AppDomain.CurrentDomain.ProcessExit += (s, ev) => _appBarManager.Unregister();
             LoadSettings();
             ApplyCssStyles();
             InitializeCssWatcher();
@@ -2246,11 +2274,10 @@ namespace OpenDock
                     if (icon == null)
                         icon = GetGenericApplicationIcon();
 
-                    Point screenLocation;
-                    if (isVertical)
-                        screenLocation = new Point(_dockVisibleLocation.X + defaultOffset, _dockVisibleLocation.Y + startOffset);
-                    else
-                        screenLocation = new Point(_dockVisibleLocation.X + startOffset, _dockVisibleLocation.Y + defaultOffset);
+                    Point offset = isVertical
+                        ? new Point(defaultOffset, startOffset)
+                        : new Point(startOffset, defaultOffset);
+                    Point screenLocation = new Point(this.Left + offset.X, this.Top + offset.Y);
 
                     var iconWindow = new IconWindow(MaxIconSize);
                     bool isRecentApp = !entry.IsPinned && entry.IsOpen;
@@ -2271,6 +2298,7 @@ namespace OpenDock
                     var animData = new DockItemData
                     {
                         WindowHandle = entry.WindowHandle,
+                        DockOffset = offset,
                         OriginalLocation = screenLocation,
                         OriginalSize = new Size(baseSize, baseSize),
                         AppKey = entry.AppKey,
@@ -2394,11 +2422,10 @@ namespace OpenDock
             // Add Recycle Bin widget in the right section (after separator)
             if (CurrentSettings.ShowRecycleBin)
             {
-                Point rbLocation;
-                if (isVertical)
-                    rbLocation = new Point(_dockVisibleLocation.X + defaultOffset, _dockVisibleLocation.Y + rbOffset);
-                else
-                    rbLocation = new Point(_dockVisibleLocation.X + rbOffset, _dockVisibleLocation.Y + defaultOffset);
+                Point rbOffsetPoint = isVertical
+                    ? new Point(defaultOffset, rbOffset)
+                    : new Point(rbOffset, defaultOffset);
+                Point rbLocation = new Point(this.Left + rbOffsetPoint.X, this.Top + rbOffsetPoint.Y);
 
                 var rbIconWindow = new IconWindow(MaxIconSize);
                 var rbIcon = GetRecycleBinIcon();
@@ -2408,6 +2435,7 @@ namespace OpenDock
                 var rbData = new DockItemData
                 {
                     WindowHandle = IntPtr.Zero,
+                    DockOffset = rbOffsetPoint,
                     OriginalLocation = rbLocation,
                     OriginalSize = new Size(baseSize, baseSize),
                     AppKey = "__recycle_bin__",
@@ -2453,11 +2481,10 @@ namespace OpenDock
             // Create Windows Start Button in the right section
             try
             {
-                Point screenLocation;
-                if (isVertical)
-                    screenLocation = new Point(_dockVisibleLocation.X + defaultOffset, _dockVisibleLocation.Y + winButtonOffset);
-                else
-                    screenLocation = new Point(_dockVisibleLocation.X + winButtonOffset, _dockVisibleLocation.Y + defaultOffset);
+                Point winOffsetPoint = isVertical
+                    ? new Point(defaultOffset, winButtonOffset)
+                    : new Point(winButtonOffset, defaultOffset);
+                Point screenLocation = new Point(this.Left + winOffsetPoint.X, this.Top + winOffsetPoint.Y);
 
                 var winIconWindow = new IconWindow(MaxIconSize);
                 winIconWindow.SetIconImage(GetMenuLogoBitmap(baseSize), baseSize, "Menü");
@@ -2465,6 +2492,7 @@ namespace OpenDock
                 var winAnimData = new DockItemData
                 {
                     WindowHandle = IntPtr.Zero,
+                    DockOffset = winOffsetPoint,
                     OriginalLocation = screenLocation,
                     OriginalSize = new Size(baseSize, baseSize),
                     Owner = winIconWindow,
@@ -2487,11 +2515,10 @@ namespace OpenDock
             // Create Task View Button (3 lines, modern Alt+Tab) in the right section
             try
             {
-                Point screenLocationTaskView;
-                if (isVertical)
-                    screenLocationTaskView = new Point(_dockVisibleLocation.X + defaultOffset, _dockVisibleLocation.Y + taskViewButtonOffset);
-                else
-                    screenLocationTaskView = new Point(_dockVisibleLocation.X + taskViewButtonOffset, _dockVisibleLocation.Y + defaultOffset);
+                Point tvOffsetPoint = isVertical
+                    ? new Point(defaultOffset, taskViewButtonOffset)
+                    : new Point(taskViewButtonOffset, defaultOffset);
+                Point screenLocationTaskView = new Point(this.Left + tvOffsetPoint.X, this.Top + tvOffsetPoint.Y);
 
                 var taskViewIconWindow = new IconWindow(MaxIconSize);
                 taskViewIconWindow.SetIconImage(GetTaskViewIconBitmap(baseSize), baseSize, "Görev Görünümü");
@@ -2499,6 +2526,7 @@ namespace OpenDock
                 var taskViewAnimData = new DockItemData
                 {
                     WindowHandle = IntPtr.Zero,
+                    DockOffset = tvOffsetPoint,
                     OriginalLocation = screenLocationTaskView,
                     OriginalSize = new Size(baseSize, baseSize),
                     Owner = taskViewIconWindow,
@@ -3326,25 +3354,25 @@ namespace OpenDock
                     target.Y -= crossAxisExpansion;
             }
 
-            Rectangle workspace = Screen.FromRectangle(_baseDockBounds).WorkingArea;
-            if (target.Width > workspace.Width)
+            Rectangle screenBounds = (Screen.FromRectangle(_baseDockBounds) ?? Screen.PrimaryScreen)?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
+            if (target.Width > screenBounds.Width)
             {
-                target.X = workspace.Left;
-                target.Width = workspace.Width;
+                target.X = screenBounds.Left;
+                target.Width = screenBounds.Width;
             }
             else
             {
-                target.X = Math.Clamp(target.X, workspace.Left, workspace.Right - target.Width);
+                target.X = Math.Clamp(target.X, screenBounds.Left, screenBounds.Right - target.Width);
             }
 
-            if (target.Height > workspace.Height)
+            if (target.Height > screenBounds.Height)
             {
-                target.Y = workspace.Top;
-                target.Height = workspace.Height;
+                target.Y = screenBounds.Top;
+                target.Height = screenBounds.Height;
             }
             else
             {
-                target.Y = Math.Clamp(target.Y, workspace.Top, workspace.Bottom - target.Height);
+                target.Y = Math.Clamp(target.Y, screenBounds.Top, screenBounds.Bottom - target.Height);
             }
 
             if (target == _magnifiedDockVisibleBounds)
@@ -3386,13 +3414,16 @@ namespace OpenDock
                 }
             }
 
-            // Offset of the icon relative to the dock visible anchor point
-            int offsetX = item.OriginalLocation.X - _dockVisibleLocation.X;
-            int offsetY = item.OriginalLocation.Y - _dockVisibleLocation.Y;
+            // Offset of the icon relative to the dock
+            int offsetX = item.DockOffset.X;
+            int offsetY = item.DockOffset.Y;
 
             // Positioning relative to CURRENT dock location (fully handles auto-hide sliding and clamping)
             int currentX = this.Left + offsetX;
             int currentY = this.Top + offsetY;
+
+            // Keep OriginalLocation in permanent lockstep with the dock
+            item.OriginalLocation = new Point(currentX, currentY);
 
             if (isVertical)
             {
@@ -4766,7 +4797,29 @@ namespace OpenDock
                 m.WParam = (IntPtr)1;
             }
 
+            const int WM_SETTINGCHANGE = 0x001A;
+            const int SPI_SETWORKAREA = 0x002F;
+            if (m.Msg == WM_SETTINGCHANGE)
+            {
+                if ((int)m.WParam == SPI_SETWORKAREA && _appBarManager != null && !_appBarManager.IsUpdating)
+                {
+                    UpdateDockPositionAndSize();
+                }
+            }
+
+            const int WM_DISPLAYCHANGE = 0x007E;
+            if (m.Msg == WM_DISPLAYCHANGE)
+            {
+                UpdateDockPositionAndSize();
+            }
+
             base.WndProc(ref m);
+        }
+
+        protected override void OnHandleDestroyed(EventArgs e)
+        {
+            _appBarManager?.Unregister();
+            base.OnHandleDestroyed(e);
         }
 
         protected override void OnPaintBackground(PaintEventArgs e)
@@ -5122,6 +5175,7 @@ namespace OpenDock
             {
                 CurrentSettings.AutoHideEnabled = _autoHideMenuItem.Checked;
                 SaveSettings();
+                UpdateDockPositionAndSize();
                 if (_autoHideMenuItem.Checked)
                 {
                     UpdateAutoHidePositions();
@@ -6139,6 +6193,10 @@ namespace OpenDock
                     }
                 }
                 UpdateClockVisibility();
+                if (!CurrentSettings.AutoHideEnabled)
+                {
+                    UpdateDockPositionAndSize();
+                }
             }
             else
             {
@@ -6524,6 +6582,7 @@ namespace OpenDock
 
             protected override void OnFormClosing(FormClosingEventArgs e)
             {
+                _appBarManager?.Unregister();
                 SaveSettings();
                 if (_clockForm != null && !_clockForm.IsDisposed)
                 {

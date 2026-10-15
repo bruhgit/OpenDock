@@ -1,0 +1,22 @@
+/* OpenDock Custom Stylesheet */
+
+.clock {
+    font-family: 'Segoe UI';
+    font-size: 24px;
+    font-weight: bold;
+    color: #ffffff;
+    text-align: right;
+}
+
+.dock {
+    background-color: #181818;
+    opacity: 175;
+    icon-size: 32px;
+    dock-length: 640px;
+    position: bottom;
+    auto-hide: false;
+}
+
+.menu {
+    background-color: #181818;
+}
