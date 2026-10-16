@@ -1362,8 +1362,6 @@ namespace OpenDock
             this.BackColor = Color.FromArgb(0, 0, 0);
             this.TopMost = true;
             this.ShowInTaskbar = false;
-
-            UpdateDockPositionAndSize();
         }
 
         private void UpdateDockPositionAndSize()
@@ -1378,7 +1376,7 @@ namespace OpenDock
             string pos = CurrentSettings.DockPosition ?? "Bottom";
             int thickness = Math.Max(50, CurrentSettings.DockIconSize + 14);
 
-            bool shouldReserve = !CurrentSettings.AutoHideEnabled;
+            bool shouldReserve = !CurrentSettings.AutoHideEnabled && !_dockHiddenByGameMode;
 
             if (shouldReserve)
             {
@@ -1427,7 +1425,10 @@ namespace OpenDock
             _magnifiedDockVisibleBounds = Bounds;
             ApplyDockRegion();
             UpdateAutoHidePositions();
-            EnableBlur();
+            if (IsHandleCreated)
+            {
+                EnableBlur();
+            }
             this.Invalidate();
 
             // Synchronize all existing icon positions immediately with the dock
@@ -1670,7 +1671,6 @@ namespace OpenDock
 
         private void Form1_Load(object sender, EventArgs e)
         {
-            this.SuspendLayout();
             _appBarManager.Register(this.Handle);
             Application.ApplicationExit += (s, ev) => _appBarManager.Unregister();
             AppDomain.CurrentDomain.ProcessExit += (s, ev) => _appBarManager.Unregister();
@@ -1763,12 +1763,19 @@ namespace OpenDock
 
             this.Activated += (s, e) => EnableBlur();
             this.Deactivate += (s, e) => EnableBlur();
+            this.Shown += (s, ev) =>
+            {
+                UpdateDockPositionAndSize();
+                RefreshDockIcons();
+                EnableBlur();
+                this.Invalidate();
+                this.Update();
+            };
             InitializeTrayIcon();
             InitializeMinimizeAnimationHook();
             StartMenuForm.InitializeStartMenuFolderWatchers();
             StartMenuForm.WarmInstalledAppsCacheAsync();
             this.FormClosed += (s, e) => DisposeMinimizeAnimationHook();
-            this.ResumeLayout();
         }
 
         private static void LaunchSettingsApp()
@@ -2728,7 +2735,9 @@ namespace OpenDock
                     CurrentSettings.MagnifiedIconSize,
                     CurrentSettings.DockIconSize,
                     MaxIconSize);
-                CurrentSettings.DockBackgroundAlpha = Math.Clamp(CurrentSettings.DockBackgroundAlpha, 0, 255);
+                CurrentSettings.DockBackgroundAlpha = CurrentSettings.DockBackgroundAlpha <= 0
+                    ? 175
+                    : Math.Clamp(CurrentSettings.DockBackgroundAlpha, 20, 255);
                 CurrentSettings.DockColorArgb = WithAlpha(CurrentSettings.DockColorArgb, CurrentSettings.DockBackgroundAlpha);
                 CurrentSettings.MenuColorArgb = WithAlpha(CurrentSettings.MenuColorArgb, CurrentSettings.DockBackgroundAlpha);
                 CurrentSettings.SearchColorArgb = WithAlpha(CurrentSettings.SearchColorArgb, 255);
@@ -4801,7 +4810,7 @@ namespace OpenDock
             const int SPI_SETWORKAREA = 0x002F;
             if (m.Msg == WM_SETTINGCHANGE)
             {
-                if ((int)m.WParam == SPI_SETWORKAREA && _appBarManager != null && !_appBarManager.IsUpdating)
+                if ((int)m.WParam == SPI_SETWORKAREA && IsHandleCreated && Visible && _appBarManager != null && !_appBarManager.IsUpdating)
                 {
                     UpdateDockPositionAndSize();
                 }
@@ -4829,6 +4838,8 @@ namespace OpenDock
 
         private void EnableBlur()
         {
+            if (!IsHandleCreated) return;
+
             // Apply WS_EX_NOACTIVATE at runtime too (belt-and-suspenders)
             IntPtr exStyle = GetWindowLongPtr(this.Handle, GWL_EXSTYLE);
             SetWindowLong(this.Handle, GWL_EXSTYLE, new IntPtr(exStyle.ToInt32() | WS_EX_NOACTIVATE));
@@ -4839,13 +4850,14 @@ namespace OpenDock
             DwmSetWindowAttribute(this.Handle, 33, ref cornerPref, sizeof(int));
 
             Color tint = Color.FromArgb(CurrentSettings.DockColorArgb);
-            int tintAlpha = CurrentSettings.DockBackgroundAlpha == 0
-                ? 0
-                : Math.Clamp(CurrentSettings.DockBackgroundAlpha / 3, 18, 72);
+            int effectiveAlpha = CurrentSettings.DockBackgroundAlpha <= 0
+                ? 175
+                : CurrentSettings.DockBackgroundAlpha;
+            int tintAlpha = Math.Clamp(effectiveAlpha / 2, 28, 120);
             int gradientColor = (tintAlpha << 24) |
                                 (tint.B << 16) |
                                 (tint.G << 8) |
-                                tint.R;
+                                (tint.R);
 
             // Acrylic samples the pixels behind the Dock. The previous legacy blur
             // state often rendered a flat tint on current Windows versions.
@@ -4885,9 +4897,10 @@ namespace OpenDock
 
             var rect = new Rectangle(1, 1, Math.Max(1, Width - 3), Math.Max(1, Height - 3));
             var dockColor = Color.FromArgb(CurrentSettings.DockColorArgb);
-            int surfaceAlpha = CurrentSettings.DockBackgroundAlpha == 0
-                ? 0
-                : Math.Clamp(CurrentSettings.DockBackgroundAlpha / 7, 16, 42);
+            int effectiveAlpha = CurrentSettings.DockBackgroundAlpha <= 0
+                ? 175
+                : CurrentSettings.DockBackgroundAlpha;
+            int surfaceAlpha = Math.Clamp(effectiveAlpha / 4, 24, 90);
             var glassColor = Color.FromArgb(surfaceAlpha, dockColor.R, dockColor.G, dockColor.B);
 
             g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
@@ -5668,7 +5681,8 @@ namespace OpenDock
         private bool IsFullscreenAppActive()
         {
             IntPtr foregroundWnd = GetForegroundWindow();
-            if (foregroundWnd == IntPtr.Zero) return false;
+            if (foregroundWnd == IntPtr.Zero || !IsWindowVisible(foregroundWnd) || IsIconic(foregroundWnd))
+                return false;
 
             // Ignore any window belonging to OpenDock process
             GetWindowThreadProcessId(foregroundWnd, out uint pid);
@@ -5680,20 +5694,36 @@ namespace OpenDock
                 string cls = className.ToString();
                 if (cls.Equals("Progman", StringComparison.OrdinalIgnoreCase) ||
                     cls.Equals("WorkerW", StringComparison.OrdinalIgnoreCase) ||
-                    cls.Equals("Shell_TrayWnd", StringComparison.OrdinalIgnoreCase))
+                    cls.Equals("Shell_TrayWnd", StringComparison.OrdinalIgnoreCase) ||
+                    cls.Equals("Shell_SecondaryTrayWnd", StringComparison.OrdinalIgnoreCase) ||
+                    cls.Equals("Windows.UI.Core.CoreWindow", StringComparison.OrdinalIgnoreCase) ||
+                    cls.Equals("XamlExplorerHostIslandWindow", StringComparison.OrdinalIgnoreCase) ||
+                    cls.Equals("MultitaskingViewFrame", StringComparison.OrdinalIgnoreCase))
                 {
                     return false;
                 }
             }
 
+            const int GWL_STYLE = -16;
+            const long WS_MAXIMIZE = 0x01000000L;
+            const long WS_CAPTION = 0x00C00000L;
+            long style = GetWindowLong(foregroundWnd, GWL_STYLE).ToInt64();
+
+            // Normal maximized desktop windows are not fullscreen games
+            if ((style & WS_MAXIMIZE) != 0)
+                return false;
+
+            // Standard captioned windows are desktop windows, not fullscreen games
+            if ((style & WS_CAPTION) == WS_CAPTION)
+                return false;
+
             if (GetWindowRect(foregroundWnd, out RECT rect))
             {
                 Rectangle screenBounds = Screen.PrimaryScreen?.Bounds ?? new Rectangle(0, 0, 1920, 1080);
-                int tolerance = 20; // Allow 20px tolerance to handle DPI scaling and window borders/shadows
-                if (rect.Left <= screenBounds.Left + tolerance &&
-                    rect.Top <= screenBounds.Top + tolerance &&
-                    rect.Right >= screenBounds.Right - tolerance &&
-                    rect.Bottom >= screenBounds.Bottom - tolerance)
+                if (rect.Left <= screenBounds.Left &&
+                    rect.Top <= screenBounds.Top &&
+                    rect.Right >= screenBounds.Right &&
+                    rect.Bottom >= screenBounds.Bottom)
                 {
                     return true;
                 }
@@ -6197,9 +6227,13 @@ namespace OpenDock
                 {
                     UpdateDockPositionAndSize();
                 }
+                EnableBlur();
+                this.Invalidate();
+                this.Update();
             }
             else
             {
+                _appBarManager?.Unregister();
                 if (_activeContextMenu != null)
                 {
                     _activeContextMenu.Close();
