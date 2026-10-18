@@ -12,9 +12,9 @@
     <PackageIcon>icon.png</PackageIcon>
     <ApplicationIcon>icon.ico</ApplicationIcon>
     <Copyright>Copyright (C) 2026 omerdev</Copyright>
-    <Version>6.0.2</Version>
-    <AssemblyVersion>6.0.2</AssemblyVersion>
-    <FileVersion>6.0.2</FileVersion>
+    <Version>6.0.3</Version>
+    <AssemblyVersion>6.0.3</AssemblyVersion>
+    <FileVersion>6.0.3</FileVersion>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
   </PropertyGroup>
 

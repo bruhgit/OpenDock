@@ -1232,17 +1232,24 @@ namespace OpenDock
             for (int index = 0; index < _dockItems.Count; index++)
             {
                 DockItemData item = _dockItems[index];
-                var rect = new Rectangle(
-                    item.OriginalLocation.X - padding,
-                    item.OriginalLocation.Y - padding,
+                int restingX = _baseDockBounds.Left + item.DockOffset.X;
+                int restingY = _baseDockBounds.Top + item.DockOffset.Y;
+                var restingRect = new Rectangle(
+                    restingX - padding,
+                    restingY - padding,
                     item.OriginalSize.Width + padding * 2,
                     item.OriginalSize.Height + padding * 2);
 
-                if (rect.Contains(cursor))
+                Rectangle activeRect = item.Owner != null && !item.Owner.IsDisposed
+                    ? item.Owner.Bounds
+                    : restingRect;
+                activeRect.Inflate(padding, padding);
+
+                if (restingRect.Contains(cursor) || activeRect.Contains(cursor))
                 {
                     double center = isVertical
-                        ? item.OriginalLocation.Y + item.OriginalSize.Height / 2.0
-                        : item.OriginalLocation.X + item.OriginalSize.Width / 2.0;
+                        ? restingY + item.OriginalSize.Height / 2.0
+                        : restingX + item.OriginalSize.Width / 2.0;
                     double pointer = isVertical ? cursor.Y : cursor.X;
                     double distance = Math.Abs(pointer - center);
                     if (distance < minDistance)
@@ -1257,7 +1264,9 @@ namespace OpenDock
             if (closestIndex >= 0)
             {
                 DockItemData hoveredItem = _dockItems[closestIndex];
-                double itemStart = isVertical ? hoveredItem.OriginalLocation.Y : hoveredItem.OriginalLocation.X;
+                int restingX = _baseDockBounds.Left + hoveredItem.DockOffset.X;
+                int restingY = _baseDockBounds.Top + hoveredItem.DockOffset.Y;
+                double itemStart = isVertical ? restingY : restingX;
                 double itemLength = Math.Max(1, isVertical ? hoveredItem.OriginalSize.Height : hoveredItem.OriginalSize.Width);
                 double pointer = isVertical ? cursor.Y : cursor.X;
                 pointerOffset = Math.Clamp((pointer - itemStart) / itemLength, 0.0, 1.0);
@@ -1270,9 +1279,11 @@ namespace OpenDock
                 double target = 0.0;
                 if (CurrentSettings.MagnificationEnabled && closestIndex >= 0)
                 {
+                    int restingX = _baseDockBounds.Left + item.DockOffset.X;
+                    int restingY = _baseDockBounds.Top + item.DockOffset.Y;
                     double itemCenter = isVertical
-                        ? item.OriginalLocation.Y + item.OriginalSize.Height / 2.0
-                        : item.OriginalLocation.X + item.OriginalSize.Width / 2.0;
+                        ? restingY + item.OriginalSize.Height / 2.0
+                        : restingX + item.OriginalSize.Width / 2.0;
                     double pointer = isVertical ? cursor.Y : cursor.X;
                     double pixelDist = Math.Abs(pointer - itemCenter);
 
@@ -1557,6 +1568,19 @@ namespace OpenDock
         {
             if (Width <= 0 || Height <= 0)
                 return;
+
+            if (Environment.OSVersion.Version.Build >= 22000)
+            {
+                // On Windows 11, DWM provides hardware anti-aliased rounded corners natively
+                // via DWMWA_WINDOW_CORNER_PREFERENCE. Setting a GDI Region overrides DWM and
+                // causes dark/gray jagged ghost corners.
+                if (Region != null)
+                {
+                    Region.Dispose();
+                    Region = null;
+                }
+                return;
+            }
 
             using var path = RoundedRect(new Rectangle(0, 0, Width, Height), DockCornerRadius);
             var oldRegion = Region;
@@ -3391,9 +3415,7 @@ namespace OpenDock
 
             _magnifiedDockVisibleBounds = target;
             Bounds = target;
-            ApplyDockRegion();
             this.Invalidate();
-            UpdateAutoHidePositions();
         }
 
         private void UpdateSingleIconPosition(DockItemData item)
@@ -3427,12 +3449,12 @@ namespace OpenDock
             int offsetX = item.DockOffset.X;
             int offsetY = item.DockOffset.Y;
 
+            // Keep OriginalLocation in lockstep with the resting dock base bounds
+            item.OriginalLocation = new Point(_baseDockBounds.Left + offsetX, _baseDockBounds.Top + offsetY);
+
             // Positioning relative to CURRENT dock location (fully handles auto-hide sliding and clamping)
             int currentX = this.Left + offsetX;
             int currentY = this.Top + offsetY;
-
-            // Keep OriginalLocation in permanent lockstep with the dock
-            item.OriginalLocation = new Point(currentX, currentY);
 
             if (isVertical)
             {
@@ -4810,7 +4832,8 @@ namespace OpenDock
             const int SPI_SETWORKAREA = 0x002F;
             if (m.Msg == WM_SETTINGCHANGE)
             {
-                if ((int)m.WParam == SPI_SETWORKAREA && IsHandleCreated && Visible && _appBarManager != null && !_appBarManager.IsUpdating)
+                // Only respond to external work area changes when dock is not actively managing/registered
+                if ((int)m.WParam == SPI_SETWORKAREA && IsHandleCreated && Visible && _appBarManager != null && !_appBarManager.IsUpdating && !_appBarManager.IsRegistered)
                 {
                     UpdateDockPositionAndSize();
                 }
@@ -4819,6 +4842,7 @@ namespace OpenDock
             const int WM_DISPLAYCHANGE = 0x007E;
             if (m.Msg == WM_DISPLAYCHANGE)
             {
+                _appBarManager?.Unregister();
                 UpdateDockPositionAndSize();
             }
 
@@ -4895,7 +4919,7 @@ namespace OpenDock
             g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
             g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
 
-            var rect = new Rectangle(1, 1, Math.Max(1, Width - 3), Math.Max(1, Height - 3));
+            var rect = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
             var dockColor = Color.FromArgb(CurrentSettings.DockColorArgb);
             int effectiveAlpha = CurrentSettings.DockBackgroundAlpha <= 0
                 ? 175
@@ -4906,17 +4930,6 @@ namespace OpenDock
             g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceCopy;
             g.Clear(Color.Transparent);
             g.CompositingMode = System.Drawing.Drawing2D.CompositingMode.SourceOver;
-
-            var shadowRect = new Rectangle(
-                rect.X + 2,
-                rect.Y + 3,
-                Math.Max(1, rect.Width - 3),
-                Math.Max(1, rect.Height - 3));
-            using (var shadowPath = RoundedRect(shadowRect, DockCornerRadius))
-            using (var shadowBrush = new SolidBrush(Color.FromArgb(40, 0, 0, 0)))
-            {
-                g.FillPath(shadowBrush, shadowPath);
-            }
 
             using (var path = RoundedRect(rect, DockCornerRadius))
             using (var fillBrush = new SolidBrush(glassColor))

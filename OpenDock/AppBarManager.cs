@@ -1,8 +1,6 @@
 using System;
 using System.Drawing;
 using System.Runtime.InteropServices;
-using System.Threading;
-using System.Threading.Tasks;
 using System.Windows.Forms;
 
 namespace OpenDock
@@ -44,42 +42,21 @@ namespace OpenDock
         [DllImport("shell32.dll", ExactSpelling = true)]
         private static extern UIntPtr SHAppBarMessage(uint dwMessage, ref APPBARDATA pData);
 
-        [DllImport("user32.dll", CharSet = CharSet.Auto, SetLastError = true)]
-        private static extern IntPtr SendMessageTimeout(
-            IntPtr hWnd,
-            uint Msg,
-            IntPtr wParam,
-            IntPtr lParam,
-            uint fuFlags,
-            uint uTimeout,
-            out IntPtr lpdwResult);
-
         private const int SPI_GETWORKAREA = 0x0030;
         private const int SPI_SETWORKAREA = 0x002F;
+        private const int SPIF_SENDCHANGE = 0x0002;
 
         private const uint ABM_GETSTATE = 0x00000004;
         private const int ABS_AUTOHIDE = 0x00000001;
-
-        private static readonly IntPtr HWND_BROADCAST = new IntPtr(0xffff);
-        private const uint WM_SETTINGCHANGE = 0x001A;
-        private const uint SMTO_BLOCK = 0x0001;
-        private const uint SMTO_ABORTIFHUNG = 0x0002;
-
-        public const int ABN_STATECHANGE = 0;
-        public const int ABN_POSCHANGED = 1;
-        public const int ABN_FULLSCREENAPP = 2;
-        public const int ABN_WINDOWARRANGE = 3;
 
         private bool _isRegistered;
         private Rectangle _reservedBounds = Rectangle.Empty;
         private Rectangle? _originalBaseWorkArea = null;
         private volatile bool _isUpdating = false;
-        private long _lastUpdateTick = 0;
 
         public bool IsRegistered => _isRegistered;
-        public int CallbackMessage => 0;
         public Rectangle ReservedBounds => _reservedBounds;
-        public bool IsUpdating => _isUpdating || (Environment.TickCount64 - Interlocked.Read(ref _lastUpdateTick) < 1200);
+        public bool IsUpdating => _isUpdating;
 
         public AppBarManager()
         {
@@ -111,7 +88,7 @@ namespace OpenDock
             Rectangle screenBounds = screen.Bounds;
             try
             {
-                // If Windows taskbar is in auto-hide mode, it does not permanently reserve screen work area.
+                // If Windows taskbar is in auto-hide mode, work area spans full screen
                 if (IsWindowsTaskbarAutoHide())
                 {
                     return screenBounds;
@@ -155,51 +132,18 @@ namespace OpenDock
             {
                 return _originalBaseWorkArea.Value;
             }
+
+            RECT currentRect = new RECT();
+            if (SystemParametersInfo(SPI_GETWORKAREA, 0, ref currentRect, 0))
+            {
+                Rectangle cur = Rectangle.FromLTRB(currentRect.left, currentRect.top, currentRect.right, currentRect.bottom);
+                if (cur.Width > 100 && cur.Height > 100 && screenBounds.Contains(cur))
+                {
+                    return cur;
+                }
+            }
+
             return screenBounds;
-        }
-
-        private void ApplyWorkAreaAndNotifyAsync(Rectangle targetArea)
-        {
-            RECT newRect = new RECT
-            {
-                left = targetArea.Left,
-                top = targetArea.Top,
-                right = targetArea.Right,
-                bottom = targetArea.Bottom
-            };
-
-            _isUpdating = true;
-            Interlocked.Exchange(ref _lastUpdateTick, Environment.TickCount64);
-            try
-            {
-                // Apply work area in kernel immediately without synchronous HWND_BROADCAST hang
-                SystemParametersInfo(SPI_SETWORKAREA, 0, ref newRect, 0);
-            }
-            finally
-            {
-                _isUpdating = false;
-            }
-
-            Task.Run(() =>
-            {
-                try
-                {
-                    Interlocked.Exchange(ref _lastUpdateTick, Environment.TickCount64);
-                    SendMessageTimeout(
-                        HWND_BROADCAST,
-                        WM_SETTINGCHANGE,
-                        new IntPtr(SPI_SETWORKAREA),
-                        IntPtr.Zero,
-                        SMTO_BLOCK | SMTO_ABORTIFHUNG,
-                        60,
-                        out _);
-                }
-                catch { }
-                finally
-                {
-                    Interlocked.Exchange(ref _lastUpdateTick, Environment.TickCount64);
-                }
-            });
         }
 
         public Rectangle UpdateReservation(string position, int thickness, Screen screen)
@@ -236,7 +180,24 @@ namespace OpenDock
 
             if (currentWorkArea != targetWorkArea)
             {
-                ApplyWorkAreaAndNotifyAsync(targetWorkArea);
+                RECT newRect = new RECT
+                {
+                    left = targetWorkArea.Left,
+                    top = targetWorkArea.Top,
+                    right = targetWorkArea.Right,
+                    bottom = targetWorkArea.Bottom
+                };
+
+                _isUpdating = true;
+                try
+                {
+                    SystemParametersInfo(SPI_SETWORKAREA, 0, ref newRect, SPIF_SENDCHANGE);
+                }
+                catch { }
+                finally
+                {
+                    _isUpdating = false;
+                }
             }
 
             _isRegistered = true;
@@ -251,7 +212,7 @@ namespace OpenDock
             try
             {
                 Screen primary = Screen.PrimaryScreen ?? Screen.AllScreens[0];
-                Rectangle restoreArea = GetBaseWorkArea(primary);
+                Rectangle restoreArea = _originalBaseWorkArea ?? GetBaseWorkArea(primary);
 
                 RECT currentRect = new RECT();
                 SystemParametersInfo(SPI_GETWORKAREA, 0, ref currentRect, 0);
@@ -268,19 +229,11 @@ namespace OpenDock
                     };
 
                     _isUpdating = true;
-                    Interlocked.Exchange(ref _lastUpdateTick, Environment.TickCount64);
                     try
                     {
-                        SystemParametersInfo(SPI_SETWORKAREA, 0, ref newRect, 0);
-                        SendMessageTimeout(
-                            HWND_BROADCAST,
-                            WM_SETTINGCHANGE,
-                            new IntPtr(SPI_SETWORKAREA),
-                            IntPtr.Zero,
-                            SMTO_BLOCK | SMTO_ABORTIFHUNG,
-                            60,
-                            out _);
+                        SystemParametersInfo(SPI_SETWORKAREA, 0, ref newRect, SPIF_SENDCHANGE);
                     }
+                    catch { }
                     finally
                     {
                         _isUpdating = false;
